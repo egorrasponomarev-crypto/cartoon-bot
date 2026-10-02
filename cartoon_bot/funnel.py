@@ -22,7 +22,15 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramServerError,
 )
-from aiogram.types import FSInputFile, InlineKeyboardMarkup, LinkPreviewOptions, Message, User
+from aiogram.types import (
+    FSInputFile,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    InputMediaVideo,
+    LinkPreviewOptions,
+    Message,
+    User,
+)
 
 import db
 import keyboards as kb
@@ -34,6 +42,7 @@ from utils import (
     discount_price_text,
     esc,
     fmt,
+    format_hours,
     format_timer,
     full_price_text,
     shift_quiet,
@@ -359,6 +368,66 @@ async def send_media(
     return sent
 
 
+# Альбомом Telegram показывает от 2 до 10 фото и видео
+ALBUM_KINDS = ("photo", "video")
+ALBUM_MAX = 10
+
+
+def is_album(media: list[dict]) -> bool:
+    """Несколько фото/видео подряд — одним альбомом, а не отдельными сообщениями."""
+    return 2 <= len(media) <= ALBUM_MAX and all(item.get("type") in ALBUM_KINDS for item in media)
+
+
+async def send_album(bot: Bot, user_id: int, items: list[dict]) -> list[Message] | None:
+    """Отправляет фото/видео одним альбомом.
+
+    Возвращает сообщения альбома. None — альбом не собрался или Telegram его не принял
+    (тогда шлём по одному: какие получится). [] — подвела связь: по одному слать не стоит.
+    """
+    group: list[Any] = []
+    cache_keys: list[str | None] = []
+    for number, item in enumerate(items, 1):
+        kind = item.get("type")
+        source: Any = item.get("file_id")
+        cache_key = None
+        if not source:
+            path = media_path(item)
+            if path is None:
+                return None
+            cache_key = f"{kind}:{path}"
+            source = _uploaded_file_ids.get(cache_key)
+            if source is None:
+                if not path.is_file():
+                    logger.warning("Медиа: файл %s не найден в папке бота", path.name)
+                    return None
+                source = FSInputFile(path, filename=f"{kind}{number}{path.suffix.lower()}")
+        if kind == "video":
+            group.append(InputMediaVideo(media=source, supports_streaming=True))
+        else:
+            group.append(InputMediaPhoto(media=source))
+        cache_keys.append(cache_key)
+    media_name = ", ".join(str(item.get("file") or item.get("file_id")) for item in items)
+    try:
+        sent = await call_safe(
+            bot, user_id, lambda: bot.send_media_group(user_id, media=group), media_name=media_name
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — альбом не обязателен: текст шага всё равно уйдёт
+        error = str(exc) or exc.__class__.__name__
+        logger.warning("Не удалось отправить альбом %s ученику %s: %s", media_name, user_id, error)
+        await _report_media_error(bot, error, media_name)
+        return []
+    if not sent:
+        return None
+    for message, item, cache_key in zip(sent, items, cache_keys):
+        if cache_key is not None and cache_key not in _uploaded_file_ids:
+            file_id = _file_id_of(message, str(item.get("type")))
+            if file_id:
+                _uploaded_file_ids[cache_key] = file_id
+    return list(sent)
+
+
 # ================================================================ «экраны»: новый экран заменяет предыдущий
 
 
@@ -368,6 +437,7 @@ class ScreenPart:
 
     preview_url — картинка по ссылке крупно над текстом (для текстов длиннее подписи к фото).
     fallback — что отправить вместо этого сообщения, если Telegram не примет картинку по ссылке.
+    album — несколько фото/видео одним альбомом (без текста и кнопок: под альбомом Telegram кнопки не ставит).
     """
 
     text: str | None = None
@@ -375,6 +445,14 @@ class ScreenPart:
     reply_markup: Any = None
     preview_url: str | None = None
     fallback: list["ScreenPart"] | None = None
+    album: list[dict] | None = None
+
+
+def media_parts(media: list[dict]) -> list[ScreenPart]:
+    """Медиа перед текстом: несколько фото/видео — одним альбомом, остальное — по одному."""
+    if is_album(media):
+        return [ScreenPart(album=media)]
+    return [ScreenPart(media=item) for item in media]
 
 
 # Удалять свои сообщения Telegram разрешает только первые 48 часов (берём с запасом)
@@ -426,6 +504,15 @@ async def _preview_failed(bot: Bot, url: str, error: str) -> None:
 
 async def _send_part(bot: Bot, user_id: int, part: ScreenPart) -> list[tuple[int, str]]:
     """Отправляет часть экрана. Возвращает отправленные сообщения: [(message_id, тип), ...]."""
+    if part.album:
+        messages = await send_album(bot, user_id, part.album)
+        if messages is not None:
+            return [(message.message_id, str(item.get("type"))) for message, item in zip(messages, part.album)]
+        # альбом не ушёл — фото и видео по одному, какие получится
+        singles: list[tuple[int, str]] = []
+        for item in part.album:
+            singles += await _send_part(bot, user_id, ScreenPart(media=item))
+        return singles
     if part.media is not None:
         message = await send_media(bot, user_id, part.media, caption=part.text, reply_markup=part.reply_markup)
         if message is not None:
@@ -481,6 +568,7 @@ async def show_screen(
         pressed_message_id is not None
         and len(parts) == 1
         and parts[0].media is None
+        and parts[0].album is None
         and old == [(pressed_message_id, "text")]
     ):
         for attempt in range(2):
@@ -563,7 +651,7 @@ def greeting_screen(first_name: str) -> list[ScreenPart]:
     markup = kb.start_kb()
     if len(media) == 1 and visible_length(text) <= CAPTION_LIMIT:
         return [ScreenPart(text=text, media=media[0], reply_markup=markup)]
-    return [ScreenPart(media=item) for item in media] + [ScreenPart(text=text, reply_markup=markup)]
+    return media_parts(media) + [ScreenPart(text=text, reply_markup=markup)]
 
 
 async def show_greeting(bot: Bot, user_id: int, first_name: str, pressed_message_id: int | None = None) -> None:
@@ -693,7 +781,7 @@ def step_screen(user: dict, step: int) -> list[ScreenPart]:
         if url:
             fallback = [ScreenPart(media=media[0]), ScreenPart(text=text, reply_markup=markup)]
             return [ScreenPart(text=text, reply_markup=markup, preview_url=url, fallback=fallback)]
-    parts = [ScreenPart(media=item) for item in media]
+    parts = media_parts(media)
     parts += [ScreenPart(text=text) for text in messages[:-1]]
     parts.append(ScreenPart(text=messages[-1], reply_markup=markup))
     return parts
@@ -783,6 +871,7 @@ def offer_text(user: dict) -> str:
             full_price=full_price_text(),
             discount_price=discount_price_text(),
             timer=format_timer(left),
+            hours=format_hours(settings.discount_hours),
         )
     else:
         price_block = fmt(texts.OFFER_PRICE_FULL, full_price=full_price_text())
