@@ -17,6 +17,7 @@ from aiogram.exceptions import (
 
 import db
 import funnel
+import history
 import keyboards as kb
 import texts
 from config import settings
@@ -67,12 +68,14 @@ async def process_job(bot: Bot, job: dict) -> None:
         step = job["step"]
         if user["current_step"] == step and not user["finished_at"]:
             template = texts.REMIND_STEP_24 if kind == "step_24" else texts.REMIND_STEP_72
-            await funnel.send_text(
+            sent = await funnel.send_text(
                 bot,
                 user_id,
                 fmt(template, name=name, step=step),
                 kb.remind_step_kb(step, with_help=(kind == "step_24")),
             )
+            if sent is not None:
+                await history.track(user_id, "reminder", step, kind)
 
     elif kind == "offer_24":
         if user["offer_shown_at"]:
@@ -81,17 +84,20 @@ async def process_job(bot: Bot, job: dict) -> None:
             left = funnel.discount_left(user, ts)
             if left > 0:
                 text += "\n\n" + fmt(texts.OFFER_REMIND_24_TIMER, timer=format_timer(left))
-            await funnel.send_text(bot, user_id, text, kb.offer_reminder_kb())
+            if await funnel.send_text(bot, user_id, text, kb.offer_reminder_kb()) is not None:
+                await history.track(user_id, "reminder", detail=kind)
 
     elif kind == "offer_last_call":
         left = funnel.discount_left(user, ts)
         if left >= funnel.min_last_call_left() and _sales_allowed(user):
-            await funnel.send_text(
+            sent = await funnel.send_text(
                 bot,
                 user_id,
                 fmt(texts.OFFER_LAST_CALL, timer=format_timer(left), full_price=full_price_text()),
                 kb.offer_reminder_kb(with_author=True),
             )
+            if sent is not None:
+                await history.track(user_id, "reminder", detail=kind)
 
     elif kind == "inactive_offer":
         # повтор оффера после «Давно не виделись», если с первого раза он не отправился
@@ -100,9 +106,11 @@ async def process_job(bot: Bot, job: dict) -> None:
 
     elif kind == "offer_ended":
         if funnel.discount_left(user, ts) == 0 and _sales_allowed(user):
-            await funnel.send_text(
+            sent = await funnel.send_text(
                 bot, user_id, fmt(texts.OFFER_ENDED, full_price=full_price_text()), kb.offer_reminder_kb()
             )
+            if sent is not None:
+                await history.track(user_id, "reminder", detail=kind)
 
     else:
         logger.warning("Неизвестный тип напоминания %r", kind)
@@ -168,6 +176,7 @@ async def process_inactivity(bot: Bot) -> None:
             continue
         _inactive_failures.pop(user_id, None)
         if sent is not None:
+            await history.track(user_id, "reminder", detail="inactive")
             try:
                 await funnel.show_offer(bot, user_id, funnel=True, as_screen=False)
             except asyncio.CancelledError:

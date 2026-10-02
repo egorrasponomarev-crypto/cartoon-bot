@@ -39,6 +39,8 @@ async def set_commands(bot: Bot) -> None:
     admin_commands = user_commands + [
         BotCommand(command="admin", description=texts.CMD_ADMIN),
         BotCommand(command="stats", description=texts.CMD_STATS),
+        BotCommand(command="user", description=texts.CMD_USER),
+        BotCommand(command="export", description=texts.CMD_EXPORT),
         BotCommand(command="broadcast", description=texts.CMD_BROADCAST),
         BotCommand(command="fileid", description=texts.CMD_FILEID),
         BotCommand(command="reset", description=texts.CMD_RESET),

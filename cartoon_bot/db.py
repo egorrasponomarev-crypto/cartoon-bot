@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS admin_links (
     user_id          INTEGER NOT NULL,
     created_at       INTEGER NOT NULL
 );
+
+-- история действий учеников: что и когда открыли, нажали, получили (для /user и /export)
+CREATE TABLE IF NOT EXISTS events (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    ts      INTEGER NOT NULL,
+    kind    TEXT NOT NULL,
+    step    INTEGER,
+    detail  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_events_user ON events (user_id, ts);
 """
 
 
@@ -256,7 +267,7 @@ async def set_blocked(user_id: int, blocked: bool) -> None:
 
 async def delete_user(user_id: int) -> None:
     """Полностью стирает ученика (используется в /reset для админа)."""
-    for table in ("jobs", "payments", "admin_links", "users"):
+    for table in ("jobs", "payments", "admin_links", "events", "users"):
         await _conn().execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
     await _conn().commit()
 
@@ -401,6 +412,73 @@ async def link_admin_message(admin_message_id: int, user_id: int) -> None:
 async def user_by_admin_message(admin_message_id: int) -> int | None:
     row = await _fetchone("SELECT user_id FROM admin_links WHERE admin_message_id = ?", (admin_message_id,))
     return row["user_id"] if row else None
+
+
+# ---------------------------------------------------------------- история действий учеников
+
+
+async def add_event(user_id: int, kind: str, step: int | None = None, detail: str | None = None) -> None:
+    await _execute(
+        "INSERT INTO events (user_id, ts, kind, step, detail) VALUES (?, ?, ?, ?, ?)",
+        (user_id, now(), kind, step, detail),
+    )
+
+
+async def user_events(user_id: int, limit: int = 40) -> list[dict]:
+    """Последние действия ученика — по порядку, сначала старые."""
+    rows = await _fetchall(
+        "SELECT * FROM events WHERE user_id = ? ORDER BY ts DESC, id DESC LIMIT ?", (user_id, limit)
+    )
+    return rows[::-1]
+
+
+async def has_event(user_id: int, kind: str, detail: str | None = None) -> bool:
+    """Есть ли у ученика такая запись в истории (detail — только с такой отметкой)."""
+    sql = "SELECT 1 AS found FROM events WHERE user_id = ? AND kind = ?"
+    params: list[Any] = [user_id, kind]
+    if detail is not None:
+        sql += " AND detail = ?"
+        params.append(detail)
+    return await _fetchone(sql + " LIMIT 1", params) is not None
+
+
+async def count_events(user_id: int) -> int:
+    row = await _fetchone("SELECT COUNT(*) AS c FROM events WHERE user_id = ?", (user_id,))
+    return row["c"] if row else 0
+
+
+async def recent_events(limit: int, exclude_user: int | None = None) -> list[dict]:
+    """Последние limit действий всех учеников — по порядку, сначала старые (exclude_user — кроме него)."""
+    rows = await _fetchall(
+        "SELECT * FROM events WHERE user_id != ? ORDER BY ts DESC, id DESC LIMIT ?",
+        (exclude_user if exclude_user is not None else -1, limit),
+    )
+    return rows[::-1]
+
+
+async def count_all_events(exclude_user: int | None = None) -> int:
+    row = await _fetchone(
+        "SELECT COUNT(*) AS c FROM events WHERE user_id != ?", (exclude_user if exclude_user is not None else -1,)
+    )
+    return row["c"] if row else 0
+
+
+async def event_summary(user_id: int | None = None) -> dict[int, dict[tuple[str, int | None], dict]]:
+    """Сводка по истории: {ученик: {(действие, шаг): {first_ts, last_ts, count}}}."""
+    where, params = ("WHERE user_id = ?", (user_id,)) if user_id is not None else ("", ())
+    rows = await _fetchall(
+        f"""SELECT user_id, kind, step, MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS count
+            FROM events {where} GROUP BY user_id, kind, step""",
+        params,
+    )
+    summary: dict[int, dict[tuple[str, int | None], dict]] = {}
+    for row in rows:
+        summary.setdefault(row["user_id"], {})[(row["kind"], row["step"])] = row
+    return summary
+
+
+async def all_users() -> list[dict]:
+    return await _fetchall("SELECT * FROM users ORDER BY created_at, user_id")
 
 
 # ---------------------------------------------------------------- статистика

@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 import db
 import funnel
+import history
 import keyboards as kb
 import texts
 from states import UserStates
@@ -21,9 +22,11 @@ router.message.filter(F.chat.type == ChatType.PRIVATE)
 async def cmd_start(message: Message, command: CommandObject, state: FSMContext, bot: Bot) -> None:
     await state.clear()
     user_id = message.from_user.id
-    if command.args:
+    label = (command.args or "").strip()[:64]
+    if label:
         # метка источника из ссылки t.me/<бот>?start=<метка>; запоминаем первую
-        await db.set_source_if_empty(user_id, command.args.strip()[:64])
+        await db.set_source_if_empty(user_id, label)
+    await history.track(user_id, "start", detail=label or None)
     # приветствие (с картинкой из GREETING_MEDIA) и «Начать шаг 1» — вместо прежнего экрана
     await funnel.show_greeting(bot, user_id, message.from_user.first_name)
     await funnel.delete_messages(bot, user_id, [message.message_id])  # само «/start» тоже убираем из чата
@@ -92,9 +95,11 @@ async def cb_cancel(callback: CallbackQuery, state: FSMContext, bot: Bot) -> Non
 async def on_bot_blocked(event: ChatMemberUpdated) -> None:
     if event.chat.type == ChatType.PRIVATE:
         await db.set_blocked(event.from_user.id, True)
+        await history.track(event.from_user.id, "blocked")
 
 
 @router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
 async def on_bot_unblocked(event: ChatMemberUpdated) -> None:
     if event.chat.type == ChatType.PRIVATE:
         await db.set_blocked(event.from_user.id, False)
+        await history.track(event.from_user.id, "unblocked")

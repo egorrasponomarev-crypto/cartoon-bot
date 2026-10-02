@@ -105,19 +105,22 @@ def format_timer(seconds: int) -> str:
     return " ".join(parts)
 
 
+def plural(n: int, forms: tuple[str, str, str]) -> str:
+    """Слово в нужной форме для числа n. forms — для 1, 2 и 5: («час», «часа», «часов»)."""
+    one, few, many = forms
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
 def format_hours(hours: float) -> str:
     """Длительность скидки словами: 1 → «1 час», 24 → «24 часа», 48 → «48 часов», 1.5 → «1,5 часа»."""
-    one, few, many = texts.HOURS_WORDS
     if float(hours) != int(hours):
-        return f"{hours:g}".replace(".", ",") + f" {few}"
-    n = int(hours)
-    if n % 10 == 1 and n % 100 != 11:
-        word = one
-    elif 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        word = few
-    else:
-        word = many
-    return f"{n} {word}"
+        return f"{hours:g}".replace(".", ",") + f" {texts.HOURS_WORDS[1]}"
+    return f"{int(hours)} {plural(int(hours), texts.HOURS_WORDS)}"
 
 
 def format_number(value: int) -> str:

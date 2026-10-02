@@ -100,16 +100,18 @@ def preorder_url() -> str | None:
 
 
 def preorder_kb(url: str) -> InlineKeyboardMarkup:
-    return _kb([InlineKeyboardButton(text=texts.BTN_PREORDER, url=url)])
+    """Кнопка, которая откроет чат с автором с готовым сообщением о предзаписи."""
+    return _kb([InlineKeyboardButton(text=texts.BTN_PREORDER_CHAT, url=url)])
 
 
 def pay_button() -> InlineKeyboardButton:
-    """«Оплатить», а в режиме предзаписи — «Предзапись на курс» (сразу открывает чат с автором)."""
+    """«Оплатить», а в режиме предзаписи — «Предзапись на курс».
+
+    Нажатие сначала приходит в бот: оно попадает в историю ученика, а админу приходит уведомление.
+    Потом бот даёт кнопку, которая откроет чат с автором (preorder_kb).
+    """
     if settings.payment_mode == "preorder":
-        url = preorder_url()
-        if url:
-            return InlineKeyboardButton(text=texts.BTN_PREORDER, url=url)
-        return _btn(texts.BTN_PREORDER, NavCb(action="pay"))  # без ссылки — заявка придёт админу в боте
+        return _btn(texts.BTN_PREORDER, NavCb(action="pay"))
     return _btn(texts.BTN_PAY, NavCb(action="pay"))
 
 

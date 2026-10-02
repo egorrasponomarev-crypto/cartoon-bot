@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery
 
 import db
 import funnel
+import history
 import keyboards as kb
 import texts
 from config import settings
@@ -59,6 +60,7 @@ async def cb_pay(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     if settings.payment_mode == "preorder":
         await _preorder(bot, callback, user)
         return
+    await history.track(user_id, "pay")
 
     rub, stars, is_discount = funnel.current_price(user)
 
@@ -96,18 +98,26 @@ async def cb_pay(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
 
 
 async def _preorder(bot: Bot, callback: CallbackQuery, user: dict) -> None:
-    """Режим предзаписи: старая кнопка «Оплатить» из прежних сообщений или «Предзапись» без ссылки на чат."""
+    """Режим предзаписи: «Предзапись на курс» (и старая кнопка «Оплатить» из прежних сообщений).
+
+    Нажатие попадает в историю ученика. Админ получает уведомление о первом нажатии (а если оно
+    не дошло — при следующем). Если есть ссылка на чат с автором — ученик сразу получает кнопку,
+    которая откроет этот чат с готовым сообщением. Если ссылки нет — заявка остаётся в боте.
+    """
     user_id = user["user_id"]
     url = kb.preorder_url()
     if url:
-        # ссылка на чат с автором есть — даём кнопку, которая откроет чат с готовым сообщением
+        # ученик не ждёт, пока уйдёт уведомление админу
         await funnel.send_to_screen(bot, user_id, texts.PREORDER_PROMPT, reply_markup=kb.preorder_kb(url))
-        return
-    # ссылки нет (у админа нет username и HELP_URL не задан) — заявку получит админ прямо в боте
-    sent = await funnel.notify_admin(
-        bot, fmt(texts.ADMIN_PREORDER_REQUEST, user=funnel.user_card(user, callback.from_user)), about_user=user_id
-    )
-    await funnel.send_to_screen(bot, user_id, texts.PREORDER_SENT if sent else texts.SEND_TO_AUTHOR_FAILED)
+    sent = None
+    if not url or not await db.has_event(user_id, "preorder", history.PREORDER_NOTIFIED):
+        sent = await funnel.notify_admin(
+            bot, fmt(texts.ADMIN_PREORDER_REQUEST, user=funnel.user_card(user, callback.from_user)), about_user=user_id
+        )
+    await history.track(user_id, "preorder", detail=history.PREORDER_NOTIFIED if sent else None)
+    if not url:
+        # ссылки на чат нет (у админа нет username и HELP_URL не задан) — заявка у админа в боте
+        await funnel.send_to_screen(bot, user_id, texts.PREORDER_SENT if sent else texts.SEND_TO_AUTHOR_FAILED)
 
 
 # ---------------------------------------------------------------- звёзды

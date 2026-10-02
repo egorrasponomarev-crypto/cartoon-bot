@@ -5,13 +5,21 @@ import logging
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType, ContentType
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message, MessageOriginChannel, MessageOriginHiddenUser, MessageOriginUser
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    Message,
+    MessageOriginChannel,
+    MessageOriginHiddenUser,
+    MessageOriginUser,
+)
 
 import db
 import funnel
+import history
 import keyboards as kb
 import texts
 from config import settings
@@ -133,6 +141,46 @@ async def cmd_stats(message: Message) -> None:
             revenue=" + ".join(revenue_parts) or texts.ADMIN_STATS_NO_REVENUE,
         )
     )
+
+
+@router.message(Command("user"))
+async def cmd_user(message: Message, command: CommandObject) -> None:
+    """История ученика: /user 123456789, /user @username или ответом /user на его пересланное сообщение."""
+    user = None
+    if not (command.args or "").strip() and message.reply_to_message is not None:
+        student_id = await db.user_by_admin_message(message.reply_to_message.message_id)
+        if student_id is not None:
+            user = await db.get_user(student_id)
+    if user is None:
+        user = await _find_student(message, command, "/user 123456789 или /user @username")
+        if user is None:
+            return
+    await message.answer(await history.user_report(user))
+
+
+@router.message(Command("export"))
+async def cmd_export(message: Message) -> None:
+    """Две таблицы для Excel: ученики (когда открыт каждый шаг) и все их действия по порядку."""
+    try:
+        files, capped = await history.export_files()
+    except Exception as exc:  # noqa: BLE001 — скажем админу, что не получилось, а не промолчим
+        logger.exception("Не получилось собрать таблицы для /export")
+        await message.answer(fmt(texts.ADMIN_EXPORT_FAILED, error=esc(str(exc) or exc.__class__.__name__)))
+        return
+    if not files:
+        await message.answer(texts.ADMIN_EXPORT_EMPTY)
+        return
+    for name, data in files:
+        try:
+            await message.answer_document(BufferedInputFile(data, filename=name))
+        except TelegramAPIError as exc:
+            logger.warning("Не получилось отправить таблицу %s: %s", name, exc)
+            await message.answer(fmt(texts.ADMIN_EXPORT_FAILED, error=esc(str(exc) or exc.__class__.__name__)))
+            return
+    done = texts.ADMIN_EXPORT_DONE
+    if capped:
+        done += "\n\n" + fmt(texts.ADMIN_EXPORT_CAPPED, limit=format_number(history.EXPORT_EVENTS_LIMIT))
+    await message.answer(done)
 
 
 @router.message(Command("reset"))

@@ -33,6 +33,7 @@ from aiogram.types import (
 )
 
 import db
+import history
 import keyboards as kb
 import texts
 from config import BASE_DIR, settings
@@ -231,6 +232,7 @@ async def ensure_user(tg_user: User) -> dict:
         ts = db.now()
         discount_until = ts + settings.hours(settings.discount_hours)
         if await db.create_user(tg_user.id, tg_user.first_name, tg_user.username, discount_until):
+            await history.track(tg_user.id, "joined")
             await schedule_discount_jobs(tg_user.id, discount_until)
             await schedule_step_reminders(tg_user.id, 1, ts)
         return await db.get_user(tg_user.id)
@@ -654,8 +656,8 @@ def greeting_screen(first_name: str) -> list[ScreenPart]:
     return media_parts(media) + [ScreenPart(text=text, reply_markup=markup)]
 
 
-async def show_greeting(bot: Bot, user_id: int, first_name: str, pressed_message_id: int | None = None) -> None:
-    await show_screen(bot, user_id, greeting_screen(first_name), pressed_message_id)
+async def show_greeting(bot: Bot, user_id: int, first_name: str, pressed_message_id: int | None = None) -> bool:
+    return await show_screen(bot, user_id, greeting_screen(first_name), pressed_message_id)
 
 
 def step_parts(user: dict, step: int) -> list[str]:
@@ -810,11 +812,13 @@ async def open_step(bot: Bot, user_id: int, step: int, pressed_message_id: int |
     if user is None:
         return
     if step <= 0:
-        await show_greeting(bot, user_id, user["first_name"], pressed_message_id)
+        if await show_greeting(bot, user_id, user["first_name"], pressed_message_id):
+            await history.track(user_id, "greeting")
         return
     step = min(step, LAST_STEP)
     await _note_progress(user, step)
-    await show_screen(bot, user_id, step_screen(user, step), pressed_message_id)
+    if await show_screen(bot, user_id, step_screen(user, step), pressed_message_id):
+        await history.track(user_id, "step", step)
 
 
 async def complete_step(bot: Bot, user_id: int, step: int, pressed_message_id: int | None = None) -> None:
@@ -827,6 +831,7 @@ async def finish_course(bot: Bot, user_id: int, pressed_message_id: int | None =
     user = await db.get_user(user_id)
     if user is None:
         return
+    await history.track(user_id, "finish")
     if not user["finished_at"]:
         await _note_progress(user, LAST_STEP)
         await db.update_user(user_id, finished_at=db.now())
@@ -847,6 +852,7 @@ async def send_step_download(bot: Bot, user_id: int, step: int) -> bool:
     if message is None:
         return False
     await db.append_screen(user_id, message.message_id, "document")
+    await history.track(user_id, "file", step)
     return True
 
 
@@ -886,12 +892,14 @@ def faq_text() -> str:
 
 async def show_program(bot: Bot, user_id: int, back_step: int = 0, pressed_message_id: int | None = None) -> None:
     part = ScreenPart(text=texts.PROGRAM, reply_markup=kb.back_to_offer_kb(back_step))
-    await show_screen(bot, user_id, [part], pressed_message_id)
+    if await show_screen(bot, user_id, [part], pressed_message_id):
+        await history.track(user_id, "program")
 
 
 async def show_faq(bot: Bot, user_id: int, back_step: int = 0, pressed_message_id: int | None = None) -> None:
     part = ScreenPart(text=faq_text(), reply_markup=kb.back_to_offer_kb(back_step))
-    await show_screen(bot, user_id, [part], pressed_message_id)
+    if await show_screen(bot, user_id, [part], pressed_message_id):
+        await history.track(user_id, "faq")
 
 
 async def show_offer(
@@ -922,6 +930,8 @@ async def show_offer(
         shown = await send_text(bot, user_id, part.text, part.reply_markup) is not None
     if not shown or user["paid_at"]:
         return
+    # as_screen=False — оффер прислал сам бот (после «давно не виделись»), а не открыл ученик
+    await history.track(user_id, "offer" if as_screen else "offer_auto", back_step or None)
     ts = db.now()
     if not user["first_offer_view_at"]:
         await db.update_user(user_id, first_offer_view_at=ts)
@@ -1012,6 +1022,7 @@ async def grant_access(
     already_paid = bool(user["paid_at"])
     if not already_paid:
         await db.update_user(user_id, paid_at=db.now())
+        await history.track(user_id, "access")
     await db.delete_jobs(user_id)
     await db.close_pending_payments(user_id)
     card = user_card(user)
@@ -1063,6 +1074,7 @@ async def revoke_access(bot: Bot, user_id: int) -> str | None:
     else:
         error = texts.ADMIN_NO_CHANNEL_ID
     await db.update_user(user_id, paid_at=None, invite_link=None)
+    await history.track(user_id, "refund")
     return error
 
 

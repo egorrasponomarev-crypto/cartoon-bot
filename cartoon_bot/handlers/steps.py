@@ -9,6 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 import funnel
+import history
 import keyboards as kb
 import texts
 from filters import FORWARDABLE
@@ -76,6 +77,7 @@ async def got_result(message: Message, state: FSMContext, bot: Bot) -> None:
     data = await state.get_data()
     await state.clear()
     delivered = await funnel.forward_to_admin(bot, message, texts.ADMIN_HEADER_RESULT, step=data.get("step"))
+    await history.track(message.from_user.id, "question")
     # заодно убираем старое нижнее меню, если оно осталось
     await message.answer(
         texts.RESULT_RECEIVED if delivered else texts.SEND_TO_AUTHOR_FAILED, reply_markup=kb.remove_menu()
