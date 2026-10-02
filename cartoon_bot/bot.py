@@ -26,11 +26,13 @@ logger = logging.getLogger("bot")
 
 async def set_commands(bot: Bot) -> None:
     """Подсказки команд в меню Telegram (кнопка «/» или «Меню» слева от поля ввода)."""
-    user_commands = [
-        BotCommand(command="start", description=texts.CMD_START),
-        BotCommand(command="paysupport", description=texts.CMD_PAYSUPPORT),
-        BotCommand(command="terms", description=texts.CMD_TERMS),
-    ]
+    user_commands = [BotCommand(command="start", description=texts.CMD_START)]
+    if settings.payment_mode != "preorder":
+        # поддержка по оплате и условия покупки нужны, только когда оплата идёт в самом боте
+        user_commands += [
+            BotCommand(command="paysupport", description=texts.CMD_PAYSUPPORT),
+            BotCommand(command="terms", description=texts.CMD_TERMS),
+        ]
     await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
     if not settings.admin_id:
         return

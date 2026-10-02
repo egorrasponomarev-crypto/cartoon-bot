@@ -116,10 +116,14 @@ def format_price(rub: int, stars: int) -> str:
 
 
 def full_price_text() -> str:
+    if settings.payment_mode == "preorder":  # оплаты в боте нет: цена — просто текст из texts.py
+        return texts.PRICE_FULL_TEXT
     return format_price(settings.price_full_rub, settings.price_full_stars)
 
 
 def discount_price_text() -> str:
+    if settings.payment_mode == "preorder":
+        return texts.PRICE_DISCOUNT_TEXT
     return format_price(settings.price_discount_rub, settings.price_discount_stars)
 
 
@@ -190,6 +194,32 @@ def _placeholders(value: object) -> list[str]:
 _ALERT_NAMES = {"BUTTON_EXPIRED", "ADMIN_ALREADY_PROCESSED", "DOWNLOAD_FAILED", "ADMIN_BROADCAST_NOT_RUNNING"}
 
 
+# Тексты, которые нужны только при определённом способе оплаты: в другом режиме их незаполненные места не важны
+_MODE_TEXTS = {
+    "stars": ("INVOICE_", "FAQ_STARS", "PRECHECKOUT_", "REFUND_DONE_USER"),
+    "link": ("LINK_PAY_PROMPT", "LINK_PAID_THANKS", "LINK_PAYMENT_NOT_FOUND"),
+    "stars,link": ("PAYSUPPORT", "TERMS"),
+}
+
+
+def _used_in_this_mode(name: str) -> bool:
+    for modes, prefixes in _MODE_TEXTS.items():
+        if name.startswith(prefixes):
+            return settings.payment_mode in modes.split(",")
+    return True
+
+
+def _placeholder_problems(name: str, value: object) -> list[str]:
+    problems = []
+    for key, text in value.items() if isinstance(value, dict) else [(None, value)]:
+        found = list(dict.fromkeys(_placeholders(text)))
+        if found:
+            label = name if key is None else f"{name}[{key}]"
+            more = f" и ещё {len(found) - 3}" if len(found) > 3 else ""
+            problems.append(f"{label}: не заполнено {', '.join(found[:3])}{more} — впиши свой текст вместо скобок")
+    return problems
+
+
 def check_texts() -> list[str]:
     """Проверяет все тексты из texts.py: разметку и длину. Возвращает список проблем."""
     problems = []
@@ -197,12 +227,8 @@ def check_texts() -> list[str]:
         if not name.isupper():
             continue
         value = getattr(texts, name)
-        for key, text in value.items() if isinstance(value, dict) else [(None, value)]:
-            found = list(dict.fromkeys(_placeholders(text)))
-            if found:
-                label = name if key is None else f"{name}[{key}]"
-                more = f" и ещё {len(found) - 3}" if len(found) > 3 else ""
-                problems.append(f"{label}: не заполнено {', '.join(found[:3])}{more} — впиши свой текст вместо скобок")
+        if _used_in_this_mode(name):
+            problems.extend(_placeholder_problems(name, value))
         if name.startswith(_PLAIN_PREFIXES) or name in _ALERT_NAMES:
             if name in _ALERT_NAMES and isinstance(value, str) and len(value) > 200:
                 problems.append(f"{name}: длиннее 200 символов ({len(value)}) — Telegram не покажет окно")

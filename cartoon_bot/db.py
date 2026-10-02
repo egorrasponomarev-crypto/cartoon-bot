@@ -174,6 +174,14 @@ async def create_user(user_id: int, first_name: str, username: str | None, disco
     return inserted == 1
 
 
+async def find_user_by_username(username: str) -> dict | None:
+    """Ученик по нику (@username), без учёта больших и маленьких букв."""
+    return await _fetchone(
+        "SELECT * FROM users WHERE LOWER(username) = LOWER(?) ORDER BY last_activity_at DESC LIMIT 1",
+        (username.lstrip("@"),),
+    )
+
+
 async def touch_user(user_id: int, first_name: str, username: str | None) -> None:
     """Отмечает активность ученика (любое сообщение или нажатие кнопки)."""
     await _execute(

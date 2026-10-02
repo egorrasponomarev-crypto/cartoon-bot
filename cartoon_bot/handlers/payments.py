@@ -55,6 +55,11 @@ async def cb_pay(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     if not user["first_offer_view_at"]:
         # нажал «Оплатить» прямо из напоминания — для статистики считаем, что оффер он видел
         await db.update_user(user_id, first_offer_view_at=db.now())
+
+    if settings.payment_mode == "preorder":
+        await _preorder(bot, callback, user)
+        return
+
     rub, stars, is_discount = funnel.current_price(user)
 
     if settings.payment_mode == "stars":
@@ -88,6 +93,21 @@ async def cb_pay(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
         reply_markup=kb.link_pay_kb(url, is_discount),
     )
     await db.append_screen(user_id, prompt.message_id, "text")
+
+
+async def _preorder(bot: Bot, callback: CallbackQuery, user: dict) -> None:
+    """Режим предзаписи: старая кнопка «Оплатить» из прежних сообщений или «Предзапись» без ссылки на чат."""
+    user_id = user["user_id"]
+    url = kb.preorder_url()
+    if url:
+        # ссылка на чат с автором есть — даём кнопку, которая откроет чат с готовым сообщением
+        await funnel.send_to_screen(bot, user_id, texts.PREORDER_PROMPT, reply_markup=kb.preorder_kb(url))
+        return
+    # ссылки нет (у админа нет username и HELP_URL не задан) — заявку получит админ прямо в боте
+    sent = await funnel.notify_admin(
+        bot, fmt(texts.ADMIN_PREORDER_REQUEST, user=funnel.user_card(user, callback.from_user)), about_user=user_id
+    )
+    await funnel.send_to_screen(bot, user_id, texts.PREORDER_SENT if sent else texts.SEND_TO_AUTHOR_FAILED)
 
 
 # ---------------------------------------------------------------- звёзды

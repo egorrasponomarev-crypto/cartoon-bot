@@ -8,7 +8,7 @@ from aiogram.enums import ChatType, ContentType
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message, MessageOriginChannel
+from aiogram.types import CallbackQuery, Message, MessageOriginChannel, MessageOriginHiddenUser, MessageOriginUser
 
 import db
 import funnel
@@ -48,11 +48,23 @@ def _not_menu_or_command(message: Message) -> bool:
     return text not in kb.MENU_BUTTONS and not text.startswith("/")
 
 
-def _parse_user_id(command: CommandObject) -> int | None:
-    try:
-        return int((command.args or "").strip().split()[0])
-    except (ValueError, IndexError):
+async def _find_student(message: Message, command: CommandObject, example: str) -> dict | None:
+    """Ученик из команды: /grant 123456789 или /grant @username. Не нашёлся — сам отвечает админу и вернёт None."""
+    args = (command.args or "").split()
+    if not args:
+        await message.answer(fmt(texts.ADMIN_BAD_ID, example=example))
         return None
+    arg = args[0]
+    if arg.isdigit():
+        user = await db.get_user(int(arg))
+    elif arg.lstrip("@").replace("_", "").isalnum():
+        user = await db.find_user_by_username(arg)
+    else:
+        await message.answer(fmt(texts.ADMIN_BAD_ID, example=example))
+        return None
+    if user is None:
+        await message.answer(fmt(texts.ADMIN_USER_NOT_FOUND, user_id=esc(arg)))
+    return user
 
 
 def _pct(part: int, whole: int) -> str:
@@ -140,13 +152,10 @@ async def cmd_reset(message: Message, state: FSMContext, bot: Bot) -> None:
 
 @router.message(Command("refund"))
 async def cmd_refund(message: Message, command: CommandObject, bot: Bot) -> None:
-    user_id = _parse_user_id(command)
-    if user_id is None:
-        await message.answer(fmt(texts.ADMIN_BAD_ID, example="/refund 123456789"))
+    user = await _find_student(message, command, "/refund 123456789 или /refund @username")
+    if user is None:
         return
-    if await db.get_user(user_id) is None:
-        await message.answer(fmt(texts.ADMIN_USER_NOT_FOUND, user_id=user_id))
-        return
+    user_id = user["user_id"]
     payment = await db.last_paid_payment(user_id)
     if payment is None:
         await message.answer(texts.ADMIN_REFUND_NOT_FOUND)
@@ -175,14 +184,10 @@ async def cmd_refund(message: Message, command: CommandObject, bot: Bot) -> None
 
 @router.message(Command("grant"))
 async def cmd_grant(message: Message, command: CommandObject, bot: Bot) -> None:
-    user_id = _parse_user_id(command)
-    if user_id is None:
-        await message.answer(fmt(texts.ADMIN_BAD_ID, example="/grant 123456789"))
-        return
-    user = await db.get_user(user_id)
+    user = await _find_student(message, command, "/grant 123456789 или /grant @username")
     if user is None:
-        await message.answer(fmt(texts.ADMIN_USER_NOT_FOUND, user_id=user_id))
         return
+    user_id = user["user_id"]
     if not user["paid_at"]:
         await db.add_payment(user_id, mode="manual", amount=0, currency="RUB", is_discount=False, status="paid")
     link_created, delivered = await funnel.grant_access(
@@ -287,6 +292,15 @@ async def forwarded_from_channel(message: Message) -> None:
         await message.answer(fmt(texts.ADMIN_CHANNEL_ID, chat_id=origin.chat.id))
     elif message.content_type in MEDIA_TYPES:
         await _answer_file_id(message)
+    elif isinstance(origin, MessageOriginUser):
+        # пересланное сообщение ученика (например, предзапись из личного чата) — кто это и как выдать доступ
+        student = await db.get_user(origin.sender_user.id)
+        template = texts.ADMIN_FORWARDED_STUDENT if student else texts.ADMIN_FORWARDED_NOT_IN_BOT
+        await message.answer(
+            fmt(template, user=funnel.user_card(student, origin.sender_user), user_id=origin.sender_user.id)
+        )
+    elif isinstance(origin, MessageOriginHiddenUser):
+        await message.answer(texts.ADMIN_FORWARDED_HIDDEN)
     else:
         await message.answer(texts.ADMIN_HINT)
 

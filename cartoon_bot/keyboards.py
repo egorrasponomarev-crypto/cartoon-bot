@@ -1,4 +1,7 @@
 """Кнопки бота. Названия кнопок берутся из texts.py."""
+import re
+from urllib.parse import quote
+
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import (
     InlineKeyboardButton,
@@ -84,6 +87,32 @@ def help_kb() -> InlineKeyboardMarkup:
     return _kb([help_button()])
 
 
+def preorder_url() -> str | None:
+    """Чат с автором (тот же, что у «Нужна помощь») с готовым сообщением о предзаписи.
+
+    Ссылка вида https://t.me/username?text=... — Telegram откроет чат и впишет текст в поле ввода.
+    None — если ссылки на чат нет (у админа нет username и HELP_URL не задан).
+    """
+    match = re.fullmatch(r"https?://(?:t|telegram)\.me/([A-Za-z0-9_]{4,32})/?", _help_url or "")
+    if match is None:
+        return None
+    return f"https://t.me/{match.group(1)}?text={quote(texts.PREORDER_MESSAGE)}"
+
+
+def preorder_kb(url: str) -> InlineKeyboardMarkup:
+    return _kb([InlineKeyboardButton(text=texts.BTN_PREORDER, url=url)])
+
+
+def pay_button() -> InlineKeyboardButton:
+    """«Оплатить», а в режиме предзаписи — «Предзапись на курс» (сразу открывает чат с автором)."""
+    if settings.payment_mode == "preorder":
+        url = preorder_url()
+        if url:
+            return InlineKeyboardButton(text=texts.BTN_PREORDER, url=url)
+        return _btn(texts.BTN_PREORDER, NavCb(action="pay"))  # без ссылки — заявка придёт админу в боте
+    return _btn(texts.BTN_PAY, NavCb(action="pay"))
+
+
 def step_kb(step: int, discount_active: bool) -> InlineKeyboardMarkup:
     if step < 5:
         main = _btn(texts.BTN_NEXT_STEP.get(step, texts.BTN_DONE), StepCb(action="done", step=step))
@@ -121,8 +150,7 @@ def cancel_kb() -> InlineKeyboardMarkup:
 def offer_kb(back_step: int = 0) -> InlineKeyboardMarkup:
     """Оффер. back_step — шаг, с которого его открыли: туда ведёт «Назад» (0 — без кнопки «Назад»)."""
     return _kb(
-        [_btn(texts.BTN_PAY, NavCb(action="pay"))],
-        [_btn(texts.BTN_PROGRAM, NavCb(action="program", step=back_step))],
+        [pay_button()],
         [_btn(texts.BTN_FAQ, NavCb(action="faq", step=back_step))],
         [_btn(texts.BTN_ASK_AUTHOR, NavCb(action="ask"))],
         [_btn(texts.BTN_BACK, StepCb(action="open", step=back_step))] if back_step else [],
@@ -137,7 +165,7 @@ def back_kb(step: int) -> InlineKeyboardMarkup | None:
 def back_to_offer_kb(back_step: int = 0) -> InlineKeyboardMarkup:
     """Под «Программой» и «Частыми вопросами»: «Назад» возвращает к офферу."""
     return _kb(
-        [_btn(texts.BTN_PAY, NavCb(action="pay"))],
+        [pay_button()],
         [_btn(texts.BTN_BACK, NavCb(action="offer", step=back_step))],
     )
 
@@ -151,7 +179,7 @@ def remind_step_kb(step: int, with_help: bool) -> InlineKeyboardMarkup:
 
 def offer_reminder_kb(with_author: bool = False) -> InlineKeyboardMarkup:
     return _kb(
-        [_btn(texts.BTN_PAY, NavCb(action="pay"))],
+        [pay_button()],
         [_btn(texts.BTN_FULL_COURSE, NavCb(action="offer"))],
         [_btn(texts.BTN_WRITE_AUTHOR, NavCb(action="ask"))] if with_author else [],
     )

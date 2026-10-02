@@ -53,7 +53,7 @@ class Settings:
     admin_id: int
     channel_id: int
 
-    payment_mode: str  # "stars" или "link"
+    payment_mode: str  # "preorder" (предзапись через чат с автором), "stars" или "link"
     price_full_rub: int
     price_discount_rub: int
     price_full_stars: int
@@ -118,9 +118,11 @@ def _load() -> Settings:
     except TokenValidationError:
         raise SystemExit("BOT_TOKEN в .env выглядит неправильно — скопируй его из @BotFather целиком, без пробелов и кавычек.")
 
-    payment_mode = _str("PAYMENT_MODE", "stars").lower()
-    if payment_mode not in ("stars", "link"):
-        raise SystemExit(f'Ошибка в .env: PAYMENT_MODE должно быть "stars" или "link", а сейчас: {payment_mode!r}')
+    payment_mode = _str("PAYMENT_MODE", "preorder").lower()
+    if payment_mode not in ("preorder", "stars", "link"):
+        raise SystemExit(
+            f'Ошибка в .env: PAYMENT_MODE должно быть "preorder", "stars" или "link", а сейчас: {payment_mode!r}'
+        )
 
     admin_id = _int("ADMIN_ID", 0)
     if payment_mode == "link" and not admin_id:
