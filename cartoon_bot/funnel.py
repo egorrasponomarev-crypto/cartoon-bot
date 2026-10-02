@@ -59,6 +59,7 @@ async def call_safe(
     make_call: Callable[[], Awaitable[Any]],
     preview: str = "",
     media_name: str | None = None,
+    raise_bad_request: bool = False,
 ) -> Any:
     """Вызывает метод Telegram для ученика.
 
@@ -66,6 +67,7 @@ async def call_safe(
     Если Telegram просит подождать — ждёт и пробует снова.
     Если Telegram не принял сообщение (обычно ошибка в texts.py) — один раз сообщает админу.
     media_name — это отправка картинки/видео (тогда админу придёт подсказка про файл, а не про текст).
+    raise_bad_request — не сообщать админу, а пробросить ошибку: вызывающий сам решит, что делать.
     Возвращает результат или None, если отправить не получилось.
     Сбои связи и лимит Telegram (после трёх попыток) пробрасываются наружу —
     планировщик повторит попытку позже.
@@ -87,6 +89,8 @@ async def call_safe(
             if "chat not found" in error.lower():
                 await db.set_blocked(user_id, True)
                 return None
+            if raise_bad_request:
+                raise
             logger.warning("Telegram не принял сообщение для %s: %s", user_id, error)
             if media_name is not None:
                 await _report_media_error(bot, error, media_name)
@@ -129,12 +133,9 @@ def above_text_preview(url: str | None) -> dict:
     return {"link_preview_options": LinkPreviewOptions(url=url, prefer_large_media=True, show_above_text=True)}
 
 
-async def send_text(
-    bot: Bot, user_id: int, text: str, reply_markup: Any = None, preview_url: str | None = None
-) -> Message | None:
-    extra = above_text_preview(preview_url)
+async def send_text(bot: Bot, user_id: int, text: str, reply_markup: Any = None) -> Message | None:
     return await call_safe(
-        bot, user_id, lambda: bot.send_message(user_id, text, reply_markup=reply_markup, **extra), preview=text
+        bot, user_id, lambda: bot.send_message(user_id, text, reply_markup=reply_markup), preview=text
     )
 
 
@@ -366,12 +367,14 @@ class ScreenPart:
     """Одно сообщение экрана: текст или картинка/видео (тогда text — подпись к ней).
 
     preview_url — картинка по ссылке крупно над текстом (для текстов длиннее подписи к фото).
+    fallback — что отправить вместо этого сообщения, если Telegram не примет картинку по ссылке.
     """
 
     text: str | None = None
     media: dict | None = None
     reply_markup: Any = None
     preview_url: str | None = None
+    fallback: list["ScreenPart"] | None = None
 
 
 # Удалять свои сообщения Telegram разрешает только первые 48 часов (берём с запасом)
@@ -407,16 +410,50 @@ async def delete_messages(bot: Bot, chat_id: int, message_ids: list[int]) -> Non
                     await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
 
 
-async def _send_part(bot: Bot, user_id: int, part: ScreenPart) -> tuple[int, str] | None:
+# Ошибка Telegram, если он не принял картинку по ссылке над текстом (None — пока всё работает).
+# После первой такой ошибки бот до перезапуска шлёт картинку отдельным сообщением.
+_preview_error: str | None = None
+
+
+async def _preview_failed(bot: Bot, url: str, error: str) -> None:
+    global _preview_error
+    if _preview_error is not None:
+        return
+    _preview_error = error
+    logger.warning("Telegram не принял картинку над текстом (%s): %s — дальше шлю её отдельно", url, error)
+    await notify_admin(bot, fmt(texts.ADMIN_PREVIEW_FAILED, url=esc(url), error=esc(error)))
+
+
+async def _send_part(bot: Bot, user_id: int, part: ScreenPart) -> list[tuple[int, str]]:
+    """Отправляет часть экрана. Возвращает отправленные сообщения: [(message_id, тип), ...]."""
     if part.media is not None:
         message = await send_media(bot, user_id, part.media, caption=part.text, reply_markup=part.reply_markup)
         if message is not None:
-            return message.message_id, str(part.media.get("type"))
+            return [(message.message_id, str(part.media.get("type")))]
         if not part.text:
-            return None
+            return []
         # картинку отправить не получилось — подпись к ней (и кнопки) уйдут обычным сообщением
-    message = await send_text(bot, user_id, part.text, part.reply_markup, preview_url=part.preview_url)
-    return (message.message_id, "text") if message is not None else None
+    elif part.preview_url:
+        if _preview_error is None:
+            preview = above_text_preview(part.preview_url)
+            try:
+                message = await call_safe(
+                    bot,
+                    user_id,
+                    lambda: bot.send_message(user_id, part.text, reply_markup=part.reply_markup, **preview),
+                    preview=part.text,
+                    raise_bad_request=True,
+                )
+                return [(message.message_id, "text")] if message is not None else []
+            except TelegramBadRequest as exc:
+                await _preview_failed(bot, part.preview_url, str(exc))
+        # картинку по ссылке Telegram не принял — картинка отдельным сообщением, потом текст с кнопками
+        sent: list[tuple[int, str]] = []
+        for extra in part.fallback or [ScreenPart(text=part.text, reply_markup=part.reply_markup)]:
+            sent += await _send_part(bot, user_id, extra)
+        return sent
+    message = await send_text(bot, user_id, part.text, part.reply_markup)
+    return [(message.message_id, "text")] if message is not None else []
 
 
 async def show_screen(
@@ -460,9 +497,7 @@ async def show_screen(
     sent: list[tuple[int, str]] = []
     try:
         for part in parts:
-            result = await _send_part(bot, user_id, part)
-            if result is not None:
-                sent.append(result)
+            sent += await _send_part(bot, user_id, part)
     except Exception:
         # сбой посреди экрана (например, пропала связь): убираем то, что успело уйти; прежний экран остаётся
         await delete_messages(bot, user_id, [message_id for message_id, _ in sent])
@@ -584,6 +619,8 @@ def public_media_url(item: dict) -> str | None:
     """
     if not (settings.media_web_dir and settings.media_base_url) or item.get("type") != "photo":
         return None
+    if _preview_error is not None:  # Telegram уже не принял такую картинку — шлём отдельным сообщением
+        return None
     path = media_path(item)
     if path is None or not path.is_file():
         return None
@@ -644,7 +681,8 @@ def step_screen(user: dict, step: int) -> list[ScreenPart]:
             return [ScreenPart(text=text, media=media[0], reply_markup=markup)]
         url = public_media_url(media[0])  # только для фото: картинка над длинным текстом
         if url:
-            return [ScreenPart(text=text, reply_markup=markup, preview_url=url)]
+            fallback = [ScreenPart(media=media[0]), ScreenPart(text=text, reply_markup=markup)]
+            return [ScreenPart(text=text, reply_markup=markup, preview_url=url, fallback=fallback)]
     parts = [ScreenPart(media=item) for item in media]
     parts += [ScreenPart(text=text) for text in messages[:-1]]
     parts.append(ScreenPart(text=messages[-1], reply_markup=markup))
