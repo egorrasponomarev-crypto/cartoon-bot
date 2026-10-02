@@ -342,7 +342,7 @@ ssh root@213.155.13.213 "bash /root/kyrs/deploy.sh"
 В конце будет «✅ Готово» или «⚠️ …» с командой, которая вернёт прежнюю версию.
 Самый первый раз, пока файла `deploy.sh` на сервере ещё нет:
 ```
-ssh root@213.155.13.213 "curl -fsSL https://raw.githubusercontent.com/egorrasponomarev-crypto/cartoon-bot/refs/heads/claude/keen-mccarthy-t8o4bf/cartoon_bot/deploy.sh | bash"
+ssh root@213.155.13.213 "curl -fsSL https://raw.githubusercontent.com/egorrasponomarev-crypto/cartoon-bot/refs/heads/claude/keen-mccarthy-t8o4bf/cartoon_bot/deploy.sh -o /root/kyrs/deploy.sh && bash /root/kyrs/deploy.sh"
 ```
 Так на сервер попадает то, что отправлено на GitHub. Если правила тексты у себя на компьютере, сначала отправь их на GitHub (`git push`) или загрузи `texts.py` по разделу 8.4.
 
