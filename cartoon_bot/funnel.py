@@ -286,7 +286,7 @@ def media_list(value: Any) -> list[dict]:
 
 
 def media_path(item: dict) -> Path | None:
-    """Путь к файлу из записи вида {"type": "photo", "file": "Шаг 0.png"} (относительно папки бота)."""
+    """Путь к файлу из записи вида {"type": "photo", "file": "step0.png"} (относительно папки бота)."""
     name = item.get("file")
     if not name:
         return None
