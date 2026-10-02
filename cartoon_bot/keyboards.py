@@ -11,7 +11,7 @@ from aiogram.types import (
 
 import texts
 from config import settings
-from utils import fmt
+from utils import discount_price_text, fmt, full_price_text
 
 # Куда ведёт кнопка «Нужна помощь». При запуске бот подставляет сюда ссылку на чат с админом
 # (если HELP_URL в .env не задан). Пусто — кнопка открывает вопрос автору внутри бота.
@@ -31,8 +31,12 @@ class StepCb(CallbackData, prefix="st"):
 
 
 class NavCb(CallbackData, prefix="nav"):
-    action: str  # offer | program | faq | pay | paid_d | paid_f | ask | cancel | mysteps
-    step: int = 0  # для offer/program/faq: с какого шага открыли (туда ведёт «Назад»); 0 — без «Назад»
+    # pitch | product | inside — экраны после шага 5, offer — цена, pay — «Вступить»/«Оплатить»,
+    # ask — вопрос автору; program, faq — старые кнопки из прежних сообщений; paid_d | paid_f | cancel | mysteps
+    action: str
+    # pay: 1 — на кнопке «Вступить» стояла цена со скидкой; ask: 1 — «Есть вопрос» на экране цены;
+    # в старых кнопках offer — с какого шага открыли оффер
+    step: int = 0
 
     @classmethod
     def unpack(cls, value: str) -> "NavCb":
@@ -72,7 +76,7 @@ def remove_menu() -> ReplyKeyboardRemove:
 
 
 def start_kb() -> InlineKeyboardMarkup:
-    """Под приветствием — всегда «Начать шаг 1» (бот не предлагает «продолжить с места»)."""
+    """Под приветствием — всегда «🚀 Начать», к шагу 1 (бот не предлагает «продолжить с места»)."""
     return _kb([_btn(texts.BTN_START_STEP1, StepCb(action="open", step=1))])
 
 
@@ -104,23 +108,26 @@ def preorder_kb(url: str) -> InlineKeyboardMarkup:
     return _kb([InlineKeyboardButton(text=texts.BTN_PREORDER_CHAT, url=url)])
 
 
-def pay_button() -> InlineKeyboardButton:
-    """«Оплатить», а в режиме предзаписи — «Предзапись на курс».
+def pay_button(discount_active: bool = True) -> InlineKeyboardButton:
+    """«🔥 Вступить за 2 490 ₽» (режим предзаписи; цена — та, что действует сейчас) или «Оплатить».
 
     Нажатие сначала приходит в бот: оно попадает в историю ученика, а админу приходит уведомление.
     Потом бот даёт кнопку, которая откроет чат с автором (preorder_kb).
     """
     if settings.payment_mode == "preorder":
-        return _btn(texts.BTN_PREORDER, NavCb(action="pay"))
+        price = discount_price_text() if discount_active else full_price_text()
+        # запоминаем, какая цена была на кнопке: если скидка закончится, а кнопка останется в старом
+        # сообщении, бот предупредит ученика и покажет актуальную цену
+        return _btn(fmt(texts.BTN_JOIN, price=price), NavCb(action="pay", step=1 if discount_active else 0))
     return _btn(texts.BTN_PAY, NavCb(action="pay"))
 
 
-def step_kb(step: int, discount_active: bool) -> InlineKeyboardMarkup:
+def step_kb(step: int) -> InlineKeyboardMarkup:
     if step < 5:
         main = _btn(texts.BTN_NEXT_STEP.get(step, texts.BTN_DONE), StepCb(action="done", step=step))
     else:
-        label = texts.BTN_GET_DISCOUNT if discount_active else texts.BTN_GET_COURSE
-        main = _btn(label, StepCb(action="finish", step=step))
+        # шаг 5: «🔥 Что дальше?» — практикум пройден, дальше экраны про полный курс
+        main = _btn(texts.BTN_WHATS_NEXT, StepCb(action="finish", step=step))
     # «Назад» с шага 1 ведёт к приветствию (шаг 0)
     back = _btn(texts.BTN_BACK, StepCb(action="open", step=step - 1))
     download = (getattr(texts, "STEP_DOWNLOADS", None) or {}).get(step)
@@ -131,7 +138,6 @@ def step_kb(step: int, discount_active: bool) -> InlineKeyboardMarkup:
         else [],
         [main],
         [back, help_button()],
-        [_btn(texts.BTN_WHATS_INSIDE, NavCb(action="offer", step=step))] if step >= 3 else [],
     )
 
 
@@ -149,27 +155,45 @@ def cancel_kb() -> InlineKeyboardMarkup:
     return _kb([_btn(texts.BTN_CANCEL, NavCb(action="cancel"))])
 
 
-def offer_kb(back_step: int = 0) -> InlineKeyboardMarkup:
-    """Оффер. back_step — шаг, с которого его открыли: туда ведёт «Назад» (0 — без кнопки «Назад»)."""
+# ---------------------------------------------------------------- экраны после шага 5
+
+
+def pitch_kb() -> InlineKeyboardMarkup:
+    """«Что дальше?»: дальше — «👀 Покажи», «Назад» — к шагу 5."""
     return _kb(
-        [pay_button()],
-        [_btn(texts.BTN_FAQ, NavCb(action="faq", step=back_step))],
-        [_btn(texts.BTN_ASK_AUTHOR, NavCb(action="ask"))],
-        [_btn(texts.BTN_BACK, StepCb(action="open", step=back_step))] if back_step else [],
+        [_btn(texts.BTN_SHOW, NavCb(action="product"))],
+        [_btn(texts.BTN_BACK, StepCb(action="open", step=5))],
+    )
+
+
+def product_kb() -> InlineKeyboardMarkup:
+    """«Покажи» (что за курс): дальше — «🔥 Что внутри?»."""
+    return _kb(
+        [_btn(texts.BTN_INSIDE, NavCb(action="inside"))],
+        [_btn(texts.BTN_BACK, NavCb(action="pitch"))],
+    )
+
+
+def inside_kb() -> InlineKeyboardMarkup:
+    """«Что внутри?»: дальше — «💳 Сколько стоит?» (экран цены)."""
+    return _kb(
+        [_btn(texts.BTN_PRICE, NavCb(action="offer"))],
+        [_btn(texts.BTN_BACK, NavCb(action="product"))],
+    )
+
+
+def offer_kb(discount_active: bool = True) -> InlineKeyboardMarkup:
+    """Экран цены: «🔥 Вступить за …» (цена — та, что действует сейчас), «❓ Есть вопрос», «Назад»."""
+    return _kb(
+        [pay_button(discount_active)],
+        [_btn(texts.BTN_QUESTION, NavCb(action="ask", step=1))],
+        [_btn(texts.BTN_BACK, NavCb(action="inside"))],
     )
 
 
 def back_kb(step: int) -> InlineKeyboardMarkup | None:
     """Одна кнопка «👈 Назад» к шагу step (0 — к приветствию); None, если возвращаться некуда."""
     return _kb([_btn(texts.BTN_BACK, StepCb(action="open", step=step))]) if step else None
-
-
-def back_to_offer_kb(back_step: int = 0) -> InlineKeyboardMarkup:
-    """Под «Программой» и «Частыми вопросами»: «Назад» возвращает к офферу."""
-    return _kb(
-        [pay_button()],
-        [_btn(texts.BTN_BACK, NavCb(action="offer", step=back_step))],
-    )
 
 
 def remind_step_kb(step: int, with_help: bool) -> InlineKeyboardMarkup:
@@ -179,9 +203,10 @@ def remind_step_kb(step: int, with_help: bool) -> InlineKeyboardMarkup:
     )
 
 
-def offer_reminder_kb(with_author: bool = False) -> InlineKeyboardMarkup:
+def offer_reminder_kb(with_author: bool = False, discount_active: bool = True) -> InlineKeyboardMarkup:
+    """Под напоминаниями про курс: «Вступить за …» (цена — та, что действует сейчас) и «🎓 Полный курс»."""
     return _kb(
-        [pay_button()],
+        [pay_button(discount_active)],
         [_btn(texts.BTN_FULL_COURSE, NavCb(action="offer"))],
         [_btn(texts.BTN_WRITE_AUTHOR, NavCb(action="ask"))] if with_author else [],
     )

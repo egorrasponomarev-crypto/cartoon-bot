@@ -18,8 +18,10 @@ router.message.filter(F.chat.type == ChatType.PRIVATE)
 
 
 @router.callback_query(kb.NavCb.filter(F.action == "ask"))
-async def cb_ask_author(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+async def cb_ask_author(callback: CallbackQuery, callback_data: kb.NavCb, state: FSMContext, bot: Bot) -> None:
     await funnel.answer_callback(callback)
+    # step=1 — «❓ Есть вопрос» на экране цены; остальные — «Написать автору» / «Нужна помощь»
+    await history.track(callback.from_user.id, "ask", step=1 if callback_data.step == 1 else None)
     await state.set_state(UserStates.waiting_question)
     await bot.send_message(callback.from_user.id, texts.ASK_AUTHOR, reply_markup=kb.cancel_kb())
 

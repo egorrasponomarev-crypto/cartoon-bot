@@ -84,7 +84,7 @@ async def process_job(bot: Bot, job: dict) -> None:
             left = funnel.discount_left(user, ts)
             if left > 0:
                 text += "\n\n" + fmt(texts.OFFER_REMIND_24_TIMER, timer=format_timer(left))
-            if await funnel.send_text(bot, user_id, text, kb.offer_reminder_kb()) is not None:
+            if await funnel.send_text(bot, user_id, text, kb.offer_reminder_kb(discount_active=left > 0)) is not None:
                 await history.track(user_id, "reminder", detail=kind)
 
     elif kind == "offer_last_call":
@@ -94,7 +94,7 @@ async def process_job(bot: Bot, job: dict) -> None:
                 bot,
                 user_id,
                 fmt(texts.OFFER_LAST_CALL, timer=format_timer(left), full_price=full_price_text()),
-                kb.offer_reminder_kb(with_author=True),
+                kb.offer_reminder_kb(with_author=True, discount_active=True),
             )
             if sent is not None:
                 await history.track(user_id, "reminder", detail=kind)
@@ -107,7 +107,7 @@ async def process_job(bot: Bot, job: dict) -> None:
     elif kind == "offer_ended":
         if funnel.discount_left(user, ts) == 0 and _sales_allowed(user):
             sent = await funnel.send_text(
-                bot, user_id, fmt(texts.OFFER_ENDED, full_price=full_price_text()), kb.offer_reminder_kb()
+                bot, user_id, fmt(texts.OFFER_ENDED, full_price=full_price_text()), kb.offer_reminder_kb(discount_active=False)
             )
             if sent is not None:
                 await history.track(user_id, "reminder", detail=kind)

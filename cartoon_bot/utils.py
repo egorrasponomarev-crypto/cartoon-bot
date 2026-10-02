@@ -198,18 +198,26 @@ def _check_one(text: str) -> list[str]:
 _PLAIN_PREFIXES = ("BTN_", "CMD_", "PRECHECKOUT_", "INVOICE_")
 # Незаполненное место из шаблона: [Название курса], [ответ], [@username]…
 _PLACEHOLDER = re.compile(r"\[[^\[\]\n]*[А-Яа-яЁёA-Za-z@][^\[\]\n]*\]")
+# Промпт для учеников в <code>…</code>: [сказка] там — часть промпта, ученик впишет своё, это не пропуск
+_CODE = re.compile(r"<code>.*?</code>", re.S)
 
 
 def _placeholders(value: object) -> list[str]:
     """Все [места для заполнения] в тексте (или в списке текстов)."""
     if isinstance(value, str):
-        return _PLACEHOLDER.findall(value)
+        return _PLACEHOLDER.findall(_CODE.sub("", value))
     if isinstance(value, (list, tuple)):
         return [found for item in value for found in _placeholders(item)]
     return []
 
 
-_ALERT_NAMES = {"BUTTON_EXPIRED", "ADMIN_ALREADY_PROCESSED", "DOWNLOAD_FAILED", "ADMIN_BROADCAST_NOT_RUNNING"}
+_ALERT_NAMES = {
+    "BUTTON_EXPIRED",
+    "ADMIN_ALREADY_PROCESSED",
+    "DOWNLOAD_FAILED",
+    "ADMIN_BROADCAST_NOT_RUNNING",
+    "DISCOUNT_ENDED_ALERT",
+}
 
 
 # Тексты, которые нужны только при определённом способе оплаты: в другом режиме их незаполненные места не важны

@@ -24,7 +24,7 @@ REPORT_LIMIT = 4000
 # В таблицу «история» — не больше стольких последних действий (это около 7 МБ):
 # иначе на большой базе файл не пройдёт в Telegram (лимит 50 МБ), а сборка займёт много памяти
 EXPORT_EVENTS_LIMIT = 100_000
-# Отметка у записи «Предзапись»: уведомление админу дошло (о следующих нажатиях этого ученика не пишем)
+# Отметка у записи «Вступить»: уведомление админу дошло (о следующих нажатиях этого ученика не пишем)
 PREORDER_NOTIFIED = "admin"
 
 
@@ -51,6 +51,8 @@ def event_label(event: dict) -> str:
         detail = fmt(texts.HISTORY_REMINDERS.get(detail, detail), step=step if step is not None else "")
     if kind == "offer" and step:
         return fmt(texts.HISTORY_OFFER_FROM_STEP, step=step)
+    if kind == "ask" and step != 1:
+        return texts.HISTORY_ASK_AUTHOR  # «Написать автору» / «Нужна помощь», а не «Есть вопрос» на экране цены
     return fmt(texts.HISTORY_EVENTS.get(kind, kind), step=step if step is not None else "", detail=detail)
 
 
@@ -117,6 +119,11 @@ async def user_report(user: dict) -> str:
         else:
             facts.append(fmt(texts.HISTORY_FACT_NO_FILE, name=name))
     offer_ts, offer_count = _offer(user, summary)
+    pages = []
+    for page, name in texts.HISTORY_SALES_PAGES.items():
+        seen = offer_ts if page == "offer" else _first(summary, page)[0]
+        pages.append(f"{name} {'✅' if seen else '▫️'}")
+    facts.append(fmt(texts.HISTORY_FACT_SALES, pages=" → ".join(pages)))
     if offer_ts:
         facts.append(fmt(texts.HISTORY_FACT_OFFER, time=_time(offer_ts), times=_times(offer_count)))
     else:
@@ -206,7 +213,10 @@ def _build_export(users: list[dict], summaries: dict, events: list[dict], now: i
         file_ts, _ = _first(summary, "file")
         offer_ts, offer_count = _offer(user, summary)
         preorder_ts, _ = _first(summary, "preorder")
+        ask_row = summary.get(("ask", 1))  # только «❓ Есть вопрос» на экране цены
+        ask_ts = ask_row["first_ts"] if ask_row else None
         _, questions = _first(summary, "question")
+        pages = [_time(_first(summary, page)[0], True) for page in ("pitch", "product", "inside")]
         rows.append(
             [
                 user["user_id"],
@@ -217,10 +227,12 @@ def _build_export(users: list[dict], summaries: dict, events: list[dict], now: i
                 _time(user.get("last_activity_at"), True),
                 *steps,
                 _time(file_ts, True),
+                _time(user.get("finished_at"), True),
+                *pages,
                 _time(offer_ts, True),
                 offer_count,
-                _time(user.get("finished_at"), True),
                 _time(preorder_ts, True),
+                _time(ask_ts, True),
                 questions,
                 _time(user.get("discount_until"), True),
                 _time(user.get("paid_at"), True),

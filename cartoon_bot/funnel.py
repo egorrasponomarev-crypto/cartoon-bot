@@ -773,7 +773,7 @@ def step_screen(user: dict, step: int) -> list[ScreenPart]:
     """
     media = media_list((getattr(texts, "STEP_MEDIA", None) or {}).get(step))
     messages = step_parts(user, step)
-    markup = kb.step_kb(step, discount_active(user))
+    markup = kb.step_kb(step)
     if len(media) == 1 and len(messages) == 1 and media[0].get("type") in ("photo", "video", "animation"):
         text = messages[0]
         if visible_length(text) <= CAPTION_LIMIT:
@@ -827,7 +827,7 @@ async def complete_step(bot: Bot, user_id: int, step: int, pressed_message_id: i
 
 
 async def finish_course(bot: Bot, user_id: int, pressed_message_id: int | None = None) -> None:
-    """Кнопка «Забрать курс со скидкой» на шаге 5: мини-курс пройден, показываем оффер."""
+    """Кнопка «🔥 Что дальше?» на шаге 5: практикум пройден, дальше — экраны про полный курс."""
     user = await db.get_user(user_id)
     if user is None:
         return
@@ -836,7 +836,8 @@ async def finish_course(bot: Bot, user_id: int, pressed_message_id: int | None =
         await _note_progress(user, LAST_STEP)
         await db.update_user(user_id, finished_at=db.now())
         await db.delete_jobs(user_id, STEP_JOBS)
-    await show_offer(bot, user_id, funnel=True, back_step=LAST_STEP, pressed_message_id=pressed_message_id)
+    if await show_sales_page(bot, user_id, "pitch", pressed_message_id):
+        await _schedule_offer_reminder(user)
 
 
 async def send_step_download(bot: Bot, user_id: int, step: int) -> bool:
@@ -869,7 +870,7 @@ async def show_steps_menu(bot: Bot, user_id: int, pressed_message_id: int | None
 
 
 def offer_text(user: dict) -> str:
-    intro = texts.OFFER_INTRO_FINISHED if user.get("finished_at") else texts.OFFER_INTRO_NOT_FINISHED
+    """Экран цены: со скидкой и таймером, пока она действует, потом — обычная цена."""
     left = discount_left(user)
     if left > 0:
         price_block = fmt(
@@ -881,25 +882,46 @@ def offer_text(user: dict) -> str:
         )
     else:
         price_block = fmt(texts.OFFER_PRICE_FULL, full_price=full_price_text())
-    return fmt(texts.OFFER, intro=intro, price_block=price_block)
+    return fmt(texts.OFFER, price_block=price_block)
 
 
-def faq_text() -> str:
-    if settings.payment_mode == "stars":
-        return f"{texts.FAQ}\n\n{texts.FAQ_STARS}"
-    return texts.FAQ
+# Экраны после шага 5 (перед ценой) по порядку: что за экран → (текст, кнопки)
+SALES_PAGES = ("pitch", "product", "inside")
 
 
-async def show_program(bot: Bot, user_id: int, back_step: int = 0, pressed_message_id: int | None = None) -> None:
-    part = ScreenPart(text=texts.PROGRAM, reply_markup=kb.back_to_offer_kb(back_step))
-    if await show_screen(bot, user_id, [part], pressed_message_id):
-        await history.track(user_id, "program")
+def _sales_page(page: str) -> ScreenPart:
+    text, markup = {
+        "pitch": (texts.SALES_PITCH, kb.pitch_kb),
+        "product": (texts.SALES_PRODUCT, kb.product_kb),
+        "inside": (texts.SALES_INSIDE, kb.inside_kb),
+    }[page]
+    return ScreenPart(text=text, reply_markup=markup())
 
 
-async def show_faq(bot: Bot, user_id: int, back_step: int = 0, pressed_message_id: int | None = None) -> None:
-    part = ScreenPart(text=faq_text(), reply_markup=kb.back_to_offer_kb(back_step))
-    if await show_screen(bot, user_id, [part], pressed_message_id):
-        await history.track(user_id, "faq")
+async def show_sales_page(bot: Bot, user_id: int, page: str, pressed_message_id: int | None = None) -> bool:
+    """Экран после шага 5: «Что дальше?» (pitch), «Покажи» (product), «Что внутри?» (inside).
+
+    Тому, кто уже купил курс, вместо них — «Ты уже в курсе». True — экран показан.
+    """
+    user = await db.get_user(user_id)
+    if user is None:
+        return False
+    if user["paid_at"]:
+        part = ScreenPart(text=texts.ALREADY_BOUGHT, reply_markup=kb.back_kb(LAST_STEP))
+        await show_screen(bot, user_id, [part], pressed_message_id)
+        return False
+    if not await show_screen(bot, user_id, [_sales_page(page)], pressed_message_id):
+        return False
+    await history.track(user_id, page)
+    return True
+
+
+async def _schedule_offer_reminder(user: dict) -> None:
+    """Напоминание про курс через сутки после того, как ученик увидел экраны о нём (только один раз)."""
+    ts = db.now()
+    if await db.claim_offer_shown(user["user_id"], ts):
+        run_at = shift_quiet(ts + settings.hours(settings.offer_reminder_hours))
+        await db.add_job(user["user_id"], "offer_24", apart_from_discount_end(user, ts, run_at))
 
 
 async def show_offer(
@@ -910,20 +932,20 @@ async def show_offer(
     pressed_message_id: int | None = None,
     as_screen: bool = True,
 ) -> None:
-    """Показывает оффер.
+    """Показывает экран цены («💳 Сколько стоит?»).
 
-    funnel=True — это «настоящий» показ оффера в воронке (после шага 5 или через 7 дней тишины):
-    после него через 24 часа придёт напоминание. Просмотр через меню напоминаний не запускает.
-    back_step — шаг, с которого открыли оффер (туда ведёт «Назад»).
+    funnel=True — показ в воронке после 7 дней тишины: через 24 часа после него придёт напоминание
+    (после шага 5 его запускает уже экран «Что дальше?»).
+    back_step — для тех, кто уже купил: шаг, куда ведёт «Назад» под «Ты уже в курсе».
     as_screen=False — отдельным сообщением, не заменяя экран (так шлёт планировщик).
     """
     user = await db.get_user(user_id)
     if user is None:
         return
     if user["paid_at"]:
-        part = ScreenPart(text=texts.ALREADY_BOUGHT, reply_markup=kb.back_kb(back_step))
+        part = ScreenPart(text=texts.ALREADY_BOUGHT, reply_markup=kb.back_kb(back_step or LAST_STEP))
     else:
-        part = ScreenPart(text=offer_text(user), reply_markup=kb.offer_kb(back_step))
+        part = ScreenPart(text=offer_text(user), reply_markup=kb.offer_kb(discount_active(user)))
     if as_screen:
         shown = await show_screen(bot, user_id, [part], pressed_message_id)
     else:
@@ -931,13 +953,11 @@ async def show_offer(
     if not shown or user["paid_at"]:
         return
     # as_screen=False — оффер прислал сам бот (после «давно не виделись»), а не открыл ученик
-    await history.track(user_id, "offer" if as_screen else "offer_auto", back_step or None)
-    ts = db.now()
+    await history.track(user_id, "offer" if as_screen else "offer_auto")
     if not user["first_offer_view_at"]:
-        await db.update_user(user_id, first_offer_view_at=ts)
-    if funnel and await db.claim_offer_shown(user_id, ts):
-        run_at = shift_quiet(ts + settings.hours(settings.offer_reminder_hours))
-        await db.add_job(user_id, "offer_24", apart_from_discount_end(user, ts, run_at))
+        await db.update_user(user_id, first_offer_view_at=db.now())
+    if funnel:
+        await _schedule_offer_reminder(user)
 
 
 # ================================================================ оплата и доступ в канал

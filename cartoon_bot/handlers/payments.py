@@ -14,7 +14,7 @@ import history
 import keyboards as kb
 import texts
 from config import settings
-from utils import esc, fmt, format_number, format_price
+from utils import discount_price_text, esc, fmt, format_number, format_price, full_price_text
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +43,23 @@ async def cmd_paysupport(message: Message) -> None:
 
 
 @router.callback_query(kb.NavCb.filter(F.action == "pay"))
-async def cb_pay(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
-    await funnel.answer_callback(callback)
-    await state.clear()
+async def cb_pay(callback: CallbackQuery, callback_data: kb.NavCb, state: FSMContext, bot: Bot) -> None:
     user_id = callback.from_user.id
     user = await db.get_user(user_id)
+    if (
+        user is not None
+        and callback_data.step == 1
+        and not user["paid_at"]
+        and settings.payment_mode == "preorder"
+        and not funnel.discount_active(user)
+    ):
+        # «Вступить за 2 490 ₽» из старого сообщения, а скидка уже закончилась — показываем актуальную цену
+        await funnel.answer_callback(callback, fmt(texts.DISCOUNT_ENDED_ALERT, full_price=full_price_text()), show_alert=True)
+        await state.clear()
+        await funnel.show_offer(bot, user_id, pressed_message_id=funnel.pressed_id(callback))
+        return
+    await funnel.answer_callback(callback)
+    await state.clear()
     if user is None:
         return
     if user["paid_at"]:
@@ -98,7 +110,7 @@ async def cb_pay(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
 
 
 async def _preorder(bot: Bot, callback: CallbackQuery, user: dict) -> None:
-    """Режим предзаписи: «Предзапись на курс» (и старая кнопка «Оплатить» из прежних сообщений).
+    """Режим предзаписи: «🔥 Вступить за …» (и старые кнопки «Предзапись»/«Оплатить» из прежних сообщений).
 
     Нажатие попадает в историю ученика. Админ получает уведомление о первом нажатии (а если оно
     не дошло — при следующем). Если есть ссылка на чат с автором — ученик сразу получает кнопку,
@@ -111,8 +123,11 @@ async def _preorder(bot: Bot, callback: CallbackQuery, user: dict) -> None:
         await funnel.send_to_screen(bot, user_id, texts.PREORDER_PROMPT, reply_markup=kb.preorder_kb(url))
     sent = None
     if not url or not await db.has_event(user_id, "preorder", history.PREORDER_NOTIFIED):
+        price = discount_price_text() if funnel.discount_active(user) else full_price_text()
         sent = await funnel.notify_admin(
-            bot, fmt(texts.ADMIN_PREORDER_REQUEST, user=funnel.user_card(user, callback.from_user)), about_user=user_id
+            bot,
+            fmt(texts.ADMIN_PREORDER_REQUEST, user=funnel.user_card(user, callback.from_user), price=price),
+            about_user=user_id,
         )
     await history.track(user_id, "preorder", detail=history.PREORDER_NOTIFIED if sent else None)
     if not url:
