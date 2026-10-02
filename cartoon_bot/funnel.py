@@ -446,11 +446,21 @@ async def _send_part(bot: Bot, user_id: int, part: ScreenPart) -> list[tuple[int
                 )
                 return [(message.message_id, "text")] if message is not None else []
             except TelegramBadRequest as exc:
+                if "WEBPAGE" not in str(exc).upper():
+                    # дело не в картинке по ссылке, а в самом тексте или кнопках: прежний экран остаётся
+                    logger.warning("Telegram не принял сообщение для %s: %s", user_id, exc)
+                    await _report_send_error(bot, str(exc), part.text or "")
+                    return []
                 await _preview_failed(bot, part.preview_url, str(exc))
         # картинку по ссылке Telegram не принял — картинка отдельным сообщением, потом текст с кнопками
         sent: list[tuple[int, str]] = []
-        for extra in part.fallback or [ScreenPart(text=part.text, reply_markup=part.reply_markup)]:
-            sent += await _send_part(bot, user_id, extra)
+        try:
+            for extra in part.fallback or [ScreenPart(text=part.text, reply_markup=part.reply_markup)]:
+                sent += await _send_part(bot, user_id, extra)
+        except Exception:
+            # сбой посреди отправки (например, пропала связь): не оставляем в чате картинку без текста
+            await delete_messages(bot, user_id, [message_id for message_id, _ in sent])
+            raise
         return sent
     message = await send_text(bot, user_id, part.text, part.reply_markup)
     return [(message.message_id, "text")] if message is not None else []

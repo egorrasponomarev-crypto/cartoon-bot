@@ -290,9 +290,7 @@ async def forwarded_from_channel(message: Message) -> None:
     origin = message.forward_origin
     if isinstance(origin, MessageOriginChannel):
         await message.answer(fmt(texts.ADMIN_CHANNEL_ID, chat_id=origin.chat.id))
-    elif message.content_type in MEDIA_TYPES:
-        await _answer_file_id(message)
-    elif isinstance(origin, MessageOriginUser):
+    elif isinstance(origin, MessageOriginUser) and origin.sender_user.id != settings.admin_id:
         # пересланное сообщение ученика (например, предзапись из личного чата) — кто это и как выдать доступ
         student = await db.get_user(origin.sender_user.id)
         template = texts.ADMIN_FORWARDED_STUDENT if student else texts.ADMIN_FORWARDED_NOT_IN_BOT
@@ -301,6 +299,9 @@ async def forwarded_from_channel(message: Message) -> None:
         )
     elif isinstance(origin, MessageOriginHiddenUser):
         await message.answer(texts.ADMIN_FORWARDED_HIDDEN)
+    elif message.content_type in MEDIA_TYPES:
+        # своё фото или видео (или /fileid) — его file_id для texts.py
+        await _answer_file_id(message)
     else:
         await message.answer(texts.ADMIN_HINT)
 

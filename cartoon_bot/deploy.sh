@@ -8,6 +8,9 @@
 # доустанавливает библиотеки, заменяет файлы бота, перезапускает его и показывает журнал.
 set -euo pipefail
 
+# Всё тело — в функции: bash прочитает файл целиком до запуска. Скрипт обновляет и сам себя,
+# и без этого bash продолжил бы читать уже новый файл с середины.
+main() {
 REPO="${REPO:-egorrasponomarev-crypto/cartoon-bot}"
 BRANCH="${1:-${BRANCH:-claude/keen-mccarthy-t8o4bf}}"  # ветка на GitHub, из которой ставим бота
 BOT_DIR="${BOT_DIR:-/root/kyrs}"
@@ -47,16 +50,20 @@ cp -r "$src"/. "$BOT_DIR"/
 echo "== Перезапускаю бота"
 since="$(date '+%Y-%m-%d %H:%M:%S')"
 systemctl restart "$SERVICE"
-sleep 10
+sleep 15
 log="$(journalctl -u "$SERVICE" --since "$since" --no-pager -o cat | grep -v 'aiohttp.access' || true)"
 echo "$log" | tail -n 25
 
 echo
-if systemctl is-active --quiet "$SERVICE" && ! grep -q 'Traceback' <<<"$log"; then
+# «Бот @… запущен» бот пишет, только когда Telegram принял токен и всё загрузилось
+if systemctl is-active --quiet "$SERVICE" && grep -q 'Бот @.* запущен' <<<"$log" && ! grep -q 'Traceback' <<<"$log"; then
     echo "✅ Готово: бот обновлён и работает."
 else
     echo "⚠️ После обновления бот не запустился или в журнале есть ошибка (выше)."
-    echo "Вернуть прежнюю версию:"
-    echo "  tar -xzf $backup -C $(dirname "$BOT_DIR") && systemctl restart $SERVICE"
+    echo "Вернуть прежнюю версию — вставь в PowerShell на компьютере:"
+    echo "  ssh root@213.155.13.213 \"tar -xzf $backup -C $(dirname "$BOT_DIR") && systemctl restart $SERVICE\""
     exit 1
 fi
+}
+
+main "$@"; exit

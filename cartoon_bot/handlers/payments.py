@@ -117,6 +117,10 @@ async def _preorder(bot: Bot, callback: CallbackQuery, user: dict) -> None:
 async def pre_checkout(query: PreCheckoutQuery) -> None:
     """Telegram спрашивает «можно принять оплату?». Отвечать нужно быстро (до 10 секунд)."""
     try:
+        if settings.payment_mode != "stars":
+            # старый счёт, выставленный до перехода на предзапись: звёзды больше не принимаем
+            await query.answer(ok=False, error_message=texts.PRECHECKOUT_DISABLED)
+            return
         is_discount = _payload_is_discount(query.invoice_payload)
         user = await db.get_user(query.from_user.id)
         if is_discount is None or query.currency != "XTR" or user is None:
