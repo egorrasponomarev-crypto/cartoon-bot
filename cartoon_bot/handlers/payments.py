@@ -43,7 +43,7 @@ async def cmd_paysupport(message: Message) -> None:
 
 @router.callback_query(kb.NavCb.filter(F.action == "pay"))
 async def cb_pay(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
-    await callback.answer()
+    await funnel.answer_callback(callback)
     await state.clear()
     user_id = callback.from_user.id
     user = await db.get_user(user_id)
@@ -162,7 +162,7 @@ async def on_successful_payment(message: Message, bot: Bot) -> None:
 
 @router.callback_query(kb.NavCb.filter(F.action.in_({"paid", "paid_d", "paid_f"})))
 async def cb_i_paid(callback: CallbackQuery, callback_data: kb.NavCb, state: FSMContext, bot: Bot) -> None:
-    await callback.answer()
+    await funnel.answer_callback(callback)
     await state.clear()
     user_id = callback.from_user.id
     user = await db.get_user(user_id)
@@ -182,18 +182,28 @@ async def cb_i_paid(callback: CallbackQuery, callback_data: kb.NavCb, state: FSM
         rub, is_discount = settings.price_full_rub, False
     else:
         rub, _, is_discount = funnel.current_price(user)
+    price_kind = texts.ADMIN_PRICE_KIND_DISCOUNT if is_discount else texts.ADMIN_PRICE_KIND_FULL
+    ended_ago = db.now() - (user["discount_until"] or 0)
+    if is_discount and ended_ago > settings.hours(0.25):
+        # кнопка со скидкой из старого сообщения: та же поблажка в 15 минут, что и при оплате звёздами
+        price_kind = fmt(texts.ADMIN_PRICE_KIND_DISCOUNT_LATE, hours=max(1, round(ended_ago / settings.hour)))
     payment_id = await db.add_payment(
         user_id, mode="link", amount=rub, currency="RUB", is_discount=is_discount, status="pending"
     )
-    await funnel.notify_admin(
+    sent = await funnel.notify_admin(
         bot,
         fmt(
             texts.ADMIN_LINK_REQUEST,
             user=funnel.user_card(user),
             amount=f"{format_number(rub)} {texts.CURRENCY_RUB}",
-            price_kind=texts.ADMIN_PRICE_KIND_DISCOUNT if is_discount else texts.ADMIN_PRICE_KIND_FULL,
+            price_kind=price_kind,
         ),
         reply_markup=kb.admin_payment_kb(payment_id),
         about_user=user_id,
     )
+    if sent is None:
+        # заявка до админа не дошла — не оставляем её «висеть», иначе повторное нажатие тоже ничего не отправит
+        await db.set_payment_status(payment_id, "failed", only_if="pending")
+        await funnel.send_to_screen(bot, user_id, texts.SEND_TO_AUTHOR_FAILED, reply_markup=kb.stuck_kb())
+        return
     await funnel.send_to_screen(bot, user_id, texts.LINK_PAID_THANKS)

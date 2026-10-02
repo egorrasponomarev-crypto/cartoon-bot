@@ -13,3 +13,11 @@ photo_*.jpeg
 photo_*.png
 video_*.mp4
 *.log
+# архив для отправки на сервер (внутри .env с токеном) и копии базы (данные учеников) — не для GitHub
+*.tar.gz
+*.zip
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3

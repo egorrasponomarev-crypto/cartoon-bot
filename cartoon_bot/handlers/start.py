@@ -66,7 +66,7 @@ async def menu_author(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(kb.NavCb.filter(F.action == "mysteps"))
 async def cb_mysteps(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
-    await callback.answer()
+    await funnel.answer_callback(callback)
     await state.clear()
     await funnel.show_steps_menu(bot, callback.from_user.id, funnel.pressed_id(callback))
 
@@ -74,7 +74,7 @@ async def cb_mysteps(callback: CallbackQuery, state: FSMContext, bot: Bot) -> No
 @router.callback_query(kb.NavCb.filter(F.action == "cancel"))
 async def cb_cancel(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await state.clear()
-    await callback.answer()
+    await funnel.answer_callback(callback)
     if callback.message is not None:
         try:
             await bot.edit_message_reply_markup(

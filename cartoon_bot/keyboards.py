@@ -45,7 +45,7 @@ class AdminPayCb(CallbackData, prefix="ap"):
 
 
 class BroadcastCb(CallbackData, prefix="bc"):
-    action: str  # all | paid | unpaid | send | cancel
+    action: str  # all | paid | unpaid | send | cancel | stop
 
 
 def _btn(text: str, data: CallbackData) -> InlineKeyboardButton:
@@ -188,6 +188,10 @@ def broadcast_segment_kb() -> InlineKeyboardMarkup:
 
 def broadcast_cancel_kb() -> InlineKeyboardMarkup:
     return _kb([_btn(texts.BTN_CANCEL, BroadcastCb(action="cancel"))])
+
+
+def broadcast_stop_kb() -> InlineKeyboardMarkup:
+    return _kb([_btn(texts.BTN_BROADCAST_STOP, BroadcastCb(action="stop"))])
 
 
 def broadcast_confirm_kb() -> InlineKeyboardMarkup:

@@ -35,7 +35,7 @@ class ActivityMiddleware(BaseMiddleware):
             previous = _last_callback.get(tg_user.id)
             _last_callback[tg_user.id] = (*key, now)
             if previous is not None and previous[:2] == key and now - previous[2] < DOUBLE_TAP_SECONDS:
-                await event.answer()  # двойное нажатие — второй раз ничего не отправляем
+                await funnel.answer_callback(event)  # двойное нажатие — второй раз ничего не отправляем
                 return None
 
         if tg_user is not None and not tg_user.is_bot and chat is not None and chat.type == ChatType.PRIVATE:

@@ -18,7 +18,7 @@ router.message.filter(F.chat.type == ChatType.PRIVATE)
 
 @router.callback_query(kb.NavCb.filter(F.action == "ask"))
 async def cb_ask_author(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
-    await callback.answer()
+    await funnel.answer_callback(callback)
     await state.set_state(UserStates.waiting_question)
     await bot.send_message(callback.from_user.id, texts.ASK_AUTHOR, reply_markup=kb.cancel_kb())
 
@@ -54,4 +54,4 @@ async def any_other_message(message: Message, bot: Bot) -> None:
 @router.callback_query()
 async def stale_button(callback: CallbackQuery) -> None:
     """Кнопка, которую уже никто не обрабатывает (например, после перезапуска бота)."""
-    await callback.answer(texts.BUTTON_EXPIRED, show_alert=True)
+    await funnel.answer_callback(callback, texts.BUTTON_EXPIRED, show_alert=True)

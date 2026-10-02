@@ -174,7 +174,20 @@ def _check_one(text: str) -> list[str]:
 
 # Эти тексты Telegram показывает как обычный текст, без разметки: кнопки, команды, счёт, всплывающие окна
 _PLAIN_PREFIXES = ("BTN_", "CMD_", "PRECHECKOUT_", "INVOICE_")
-_ALERT_NAMES = {"BUTTON_EXPIRED", "ADMIN_ALREADY_PROCESSED", "DOWNLOAD_FAILED"}
+# Незаполненное место из шаблона: [Название курса], [ответ], [@username]…
+_PLACEHOLDER = re.compile(r"\[[^\[\]\n]*[А-Яа-яЁёA-Za-z@][^\[\]\n]*\]")
+
+
+def _placeholders(value: object) -> list[str]:
+    """Все [места для заполнения] в тексте (или в списке текстов)."""
+    if isinstance(value, str):
+        return _PLACEHOLDER.findall(value)
+    if isinstance(value, (list, tuple)):
+        return [found for item in value for found in _placeholders(item)]
+    return []
+
+
+_ALERT_NAMES = {"BUTTON_EXPIRED", "ADMIN_ALREADY_PROCESSED", "DOWNLOAD_FAILED", "ADMIN_BROADCAST_NOT_RUNNING"}
 
 
 def check_texts() -> list[str]:
@@ -184,6 +197,12 @@ def check_texts() -> list[str]:
         if not name.isupper():
             continue
         value = getattr(texts, name)
+        for key, text in value.items() if isinstance(value, dict) else [(None, value)]:
+            found = list(dict.fromkeys(_placeholders(text)))
+            if found:
+                label = name if key is None else f"{name}[{key}]"
+                more = f" и ещё {len(found) - 3}" if len(found) > 3 else ""
+                problems.append(f"{label}: не заполнено {', '.join(found[:3])}{more} — впиши свой текст вместо скобок")
         if name.startswith(_PLAIN_PREFIXES) or name in _ALERT_NAMES:
             if name in _ALERT_NAMES and isinstance(value, str) and len(value) > 200:
                 problems.append(f"{name}: длиннее 200 символов ({len(value)}) — Telegram не покажет окно")

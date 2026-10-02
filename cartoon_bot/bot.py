@@ -86,16 +86,23 @@ def build_dispatcher() -> Dispatcher:
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     await db.init_db(settings.db_path)
-
     session = AiohttpSession(proxy=settings.proxy) if settings.proxy else AiohttpSession()
     bot = Bot(settings.bot_token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    # Базу закрываем при любом исходе: открытая база не даёт процессу завершиться, и если при запуске
+    # нет связи с Telegram, бот «висел» бы вместо того, чтобы упасть и перезапуститься (systemd Restart=always)
+    try:
+        await run(bot)
+    finally:
+        await db.close_db()
+        await bot.session.close()
+
+
+async def run(bot: Bot) -> None:
     dp = build_dispatcher()
 
     try:
         me = await bot.get_me()
     except TelegramUnauthorizedError:
-        await bot.session.close()
-        await db.close_db()
         raise SystemExit("Telegram не принял BOT_TOKEN. Проверь токен в файле .env (его выдаёт @BotFather).")
 
     mode_label = texts.YES if settings.test_mode else texts.NO
@@ -152,8 +159,6 @@ async def main() -> None:
         scheduler_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await scheduler_task
-        await db.close_db()
-        await bot.session.close()
 
 
 if __name__ == "__main__":

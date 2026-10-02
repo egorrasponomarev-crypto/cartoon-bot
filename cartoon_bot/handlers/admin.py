@@ -37,6 +37,7 @@ MEDIA_TYPES = {
 }
 
 _broadcast_task: asyncio.Task | None = None
+_broadcast_stop_requested = False  # True — рассылку остановил админ (а не перезапуск бота)
 
 
 def _not_menu_or_command(message: Message) -> bool:
@@ -300,7 +301,7 @@ async def admin_media(message: Message) -> None:
 
 @router.callback_query(AdminStates.broadcast_segment, kb.BroadcastCb.filter(F.action.in_({"all", "paid", "unpaid"})))
 async def broadcast_segment(callback: CallbackQuery, callback_data: kb.BroadcastCb, state: FSMContext, bot: Bot) -> None:
-    await callback.answer()
+    await funnel.answer_callback(callback)
     await state.update_data(segment=callback_data.action)
     await state.set_state(AdminStates.broadcast_content)
     await bot.send_message(
@@ -331,25 +332,51 @@ async def broadcast_use_buttons(message: Message) -> None:
 
 @router.callback_query(AdminStates.broadcast_confirm, kb.BroadcastCb.filter(F.action == "send"))
 async def broadcast_send(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
-    global _broadcast_task
+    global _broadcast_task, _broadcast_stop_requested
     data = await state.get_data()
     await state.clear()
-    await callback.answer()
+    await funnel.answer_callback(callback)
     if _broadcast_task is not None and not _broadcast_task.done():
         await bot.send_message(callback.from_user.id, texts.ADMIN_BROADCAST_BUSY)
         return
+    # рассылка пошла — кнопки «Отправить» и «Отмена» под превью больше не нужны
+    await _remove_pressed_buttons(callback, bot)
     user_ids = await db.users_for_broadcast(data.get("segment", "all"))
+    _broadcast_stop_requested = False
     _broadcast_task = asyncio.create_task(
         run_broadcast(bot, user_ids, data["from_chat_id"], data["message_id"])
     )
-    await bot.send_message(callback.from_user.id, texts.ADMIN_BROADCAST_STARTED)
+    await bot.send_message(callback.from_user.id, texts.ADMIN_BROADCAST_STARTED, reply_markup=kb.broadcast_stop_kb())
 
 
 @router.callback_query(kb.BroadcastCb.filter(F.action == "cancel"))
 async def broadcast_cancel(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await state.clear()
-    await callback.answer()
+    await funnel.answer_callback(callback)
+    if _broadcast_task is not None and not _broadcast_task.done():
+        # «Отмена» под старым сообщением не останавливает уже идущую рассылку — не делаем вид, что остановила
+        await bot.send_message(callback.from_user.id, texts.ADMIN_BROADCAST_RUNNING)
+        return
     await bot.send_message(callback.from_user.id, texts.ADMIN_BROADCAST_CANCELLED)
+
+
+@router.callback_query(kb.BroadcastCb.filter(F.action == "stop"))
+async def broadcast_stop(callback: CallbackQuery, bot: Bot) -> None:
+    """Кнопка «Остановить рассылку»: итог (сколько успело уйти) пришлёт сама рассылка."""
+    global _broadcast_stop_requested
+    await _remove_pressed_buttons(callback, bot)
+    if _broadcast_task is None or _broadcast_task.done():
+        await funnel.answer_callback(callback, texts.ADMIN_BROADCAST_NOT_RUNNING, show_alert=True)
+        return
+    await funnel.answer_callback(callback)
+    _broadcast_stop_requested = True
+    _broadcast_task.cancel()
+
+
+async def _remove_pressed_buttons(callback: CallbackQuery, bot: Bot) -> None:
+    message_id = funnel.pressed_id(callback)
+    if message_id is not None:
+        await funnel.remove_buttons(bot, callback.from_user.id, [message_id])
 
 
 async def run_broadcast(bot: Bot, user_ids: list[int], from_chat_id: int, message_id: int) -> None:
@@ -383,8 +410,16 @@ async def run_broadcast(bot: Bot, user_ids: list[int], from_chat_id: int, messag
                 failed += 1
             await asyncio.sleep(settings.broadcast_delay)
     finally:
-        logger.info("Рассылка завершена: доставлено %s, не доставлено %s", ok, failed)
-        await funnel.notify_admin(bot, fmt(texts.ADMIN_BROADCAST_DONE, ok=ok, failed=failed, blocked=blocked))
+        # кому не успели отправить: рассылку остановил админ, бота перезапустили или случилась ошибка
+        left = len(user_ids) - ok - failed
+        if left <= 0:
+            template = texts.ADMIN_BROADCAST_DONE
+        elif _broadcast_stop_requested:
+            template = texts.ADMIN_BROADCAST_STOPPED
+        else:
+            template = texts.ADMIN_BROADCAST_INTERRUPTED
+        logger.info("Рассылка: доставлено %s, не доставлено %s, не отправлено %s", ok, failed, max(left, 0))
+        await funnel.notify_admin(bot, fmt(template, ok=ok, failed=failed, blocked=blocked, left=left))
 
 
 # ================================================================ подтверждение оплаты (режим link)
@@ -394,20 +429,20 @@ async def run_broadcast(bot: Bot, user_ids: list[int], from_chat_id: int, messag
 async def admin_payment_decision(callback: CallbackQuery, callback_data: kb.AdminPayCb, bot: Bot) -> None:
     payment = await db.get_payment(callback_data.payment_id)
     if payment is None or payment["status"] != "pending":
-        await callback.answer(texts.ADMIN_ALREADY_PROCESSED, show_alert=True)
+        await funnel.answer_callback(callback, texts.ADMIN_ALREADY_PROCESSED, show_alert=True)
         return
     user_id = payment["user_id"]
     user = await db.get_user(user_id)
     if user is not None and user["paid_at"]:
         # доступ уже выдан (например, через /grant) — старую заявку просто закрываем
         await db.set_payment_status(payment["id"], "duplicate", only_if="pending")
-        await callback.answer()
+        await funnel.answer_callback(callback)
         result = texts.ADMIN_PAYMENT_ALREADY_PAID
     elif callback_data.action == "ok":
         if not await db.set_payment_status(payment["id"], "paid", only_if="pending"):
-            await callback.answer(texts.ADMIN_ALREADY_PROCESSED, show_alert=True)
+            await funnel.answer_callback(callback, texts.ADMIN_ALREADY_PROCESSED, show_alert=True)
             return
-        await callback.answer()
+        await funnel.answer_callback(callback)
         link_created, delivered = await funnel.grant_access(
             bot,
             user_id,
@@ -423,9 +458,9 @@ async def admin_payment_decision(callback: CallbackQuery, callback_data: kb.Admi
             result = texts.ADMIN_PAYMENT_CONFIRMED
     else:
         if not await db.set_payment_status(payment["id"], "rejected", only_if="pending"):
-            await callback.answer(texts.ADMIN_ALREADY_PROCESSED, show_alert=True)
+            await funnel.answer_callback(callback, texts.ADMIN_ALREADY_PROCESSED, show_alert=True)
             return
-        await callback.answer()
+        await funnel.answer_callback(callback)
         await funnel.send_text(bot, user_id, texts.LINK_PAYMENT_NOT_FOUND, kb.stuck_kb())
         result = texts.ADMIN_PAYMENT_REJECTED
 

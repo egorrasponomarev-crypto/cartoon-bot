@@ -112,6 +112,16 @@ async def _report_media_error(bot: Bot, error: str, media_name: str) -> None:
     await notify_admin(bot, fmt(texts.ADMIN_MEDIA_ERROR, file=esc(media_name), error=esc(error)))
 
 
+async def answer_callback(callback: Any, text: str | None = None, show_alert: bool = False) -> None:
+    """Убирает «часики» с нажатой кнопки (и показывает окошко с text, если он задан).
+
+    Если Telegram не принял ответ (кнопку нажали, пока бот перезапускался, — такой ответ уже
+    «слишком старый», — или пропала связь), не страшно: само действие кнопки всё равно выполняем.
+    """
+    with contextlib.suppress(TelegramAPIError):
+        await callback.answer(text, show_alert=show_alert)
+
+
 def above_text_preview(url: str | None) -> dict:
     """Картинка по ссылке крупно НАД текстом сообщения (как в постах каналов). Пусто — обычное превью."""
     if not url:
@@ -129,12 +139,22 @@ async def send_text(
 
 
 async def admin_call(make_call: Callable[[], Awaitable[Any]]) -> Any:
-    """Вызов Telegram в сторону админа: ждёт, если Telegram просит подождать, и никогда не падает."""
-    for _ in range(4):
+    """Вызов Telegram в сторону админа: ждёт, если Telegram просит подождать, и никогда не падает.
+
+    При сбое связи пробует ещё пару раз: иначе одна секундная заминка — и админ не узнал бы об оплате.
+    """
+    network_failures = 0
+    for _ in range(5):
         try:
             return await make_call()
         except TelegramRetryAfter as exc:
             await asyncio.sleep(exc.retry_after + 1)
+        except (TelegramNetworkError, TelegramServerError) as exc:
+            network_failures += 1
+            if network_failures >= 3:
+                logger.error("Не удалось написать админу: нет связи с Telegram (%s)", exc)
+                return None
+            await asyncio.sleep(2 * network_failures)
         except Exception as exc:  # noqa: BLE001 — сообщение админу не должно ронять обработку ученика
             logger.error("Не удалось написать админу (%s). Админ должен нажать /start в своём боте.", exc)
             return None
@@ -212,16 +232,20 @@ async def ensure_user(tg_user: User) -> dict:
 # ================================================================ напоминания
 
 
+def apart_from_discount_end(user: dict | None, from_ts: int, run_at: int) -> int:
+    """Не присылаем напоминание в ту же минуту, что и «Скидка закончилась» — разносим на 2 часа."""
+    until = (user or {}).get("discount_until") or 0
+    ended_at = shift_quiet(until) if until else 0
+    if ended_at > from_ts and abs(run_at - ended_at) < settings.hours(1):
+        return shift_quiet(ended_at + settings.hours(2))
+    return run_at
+
+
 async def schedule_step_reminders(user_id: int, step: int, from_ts: int) -> None:
     """Напоминания «как там шаг N?» через 24 и 72 часа (старые напоминания о шагах заменяются)."""
     run_24 = shift_quiet(from_ts + settings.hours(settings.step_reminder_1_hours))
     run_72 = shift_quiet(from_ts + settings.hours(settings.step_reminder_2_hours))
-    # Не присылаем «как там шаг?» в ту же минуту, что и «Скидка закончилась» — разносим на 2 часа
-    user = await db.get_user(user_id)
-    until = (user or {}).get("discount_until") or 0
-    ended_at = shift_quiet(until) if until else 0
-    if ended_at > from_ts and abs(run_24 - ended_at) < settings.hours(1):
-        run_24 = shift_quiet(ended_at + settings.hours(2))
+    run_24 = apart_from_discount_end(await db.get_user(user_id), from_ts, run_24)
     await db.delete_jobs(user_id, STEP_JOBS)
     await db.add_job(user_id, "step_24", run_24, step)
     await db.add_job(user_id, "step_72", run_72, step)
@@ -412,19 +436,27 @@ async def show_screen(
         and parts[0].media is None
         and old == [(pressed_message_id, "text")]
     ):
-        try:
-            await bot.edit_message_text(
-                chat_id=user_id,
-                message_id=pressed_message_id,
-                text=parts[0].text,
-                reply_markup=parts[0].reply_markup,
-                **above_text_preview(parts[0].preview_url),
-            )
-            return True
-        except TelegramBadRequest as exc:
-            if "not modified" in str(exc).lower():
+        for attempt in range(2):
+            try:
+                await bot.edit_message_text(
+                    chat_id=user_id,
+                    message_id=pressed_message_id,
+                    text=parts[0].text,
+                    reply_markup=parts[0].reply_markup,
+                    **above_text_preview(parts[0].preview_url),
+                )
                 return True
-            logger.info("Не получилось изменить сообщение %s (%s) — отправляю заново", pressed_message_id, exc)
+            except TelegramRetryAfter as exc:
+                # Telegram просит подождать (ученик часто нажимает кнопки): ждём и пробуем ещё раз,
+                # а если опять «подожди» — отправляем экран заново (там свои повторы)
+                if attempt:
+                    break
+                await asyncio.sleep(exc.retry_after + 1)
+            except TelegramBadRequest as exc:
+                if "not modified" in str(exc).lower():
+                    return True
+                logger.info("Не получилось изменить сообщение %s (%s) — отправляю заново", pressed_message_id, exc)
+                break
     sent: list[tuple[int, str]] = []
     try:
         for part in parts:
@@ -757,7 +789,8 @@ async def show_offer(
     if not user["first_offer_view_at"]:
         await db.update_user(user_id, first_offer_view_at=ts)
     if funnel and await db.claim_offer_shown(user_id, ts):
-        await db.add_job(user_id, "offer_24", shift_quiet(ts + settings.hours(settings.offer_reminder_hours)))
+        run_at = shift_quiet(ts + settings.hours(settings.offer_reminder_hours))
+        await db.add_job(user_id, "offer_24", apart_from_discount_end(user, ts, run_at))
 
 
 # ================================================================ оплата и доступ в канал

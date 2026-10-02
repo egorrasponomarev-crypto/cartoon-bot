@@ -8,7 +8,12 @@ import asyncio
 import logging
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramEntityTooLarge,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 
 import db
 import funnel
@@ -20,6 +25,16 @@ from utils import esc, fmt, format_timer, full_price_text, is_quiet, shift_quiet
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5
+# Нет связи с Telegram или он сам сбоит: такое напоминание повторяем, пока связь не вернётся,
+# и попыткой это не считаем (иначе получасовой сбой стёр бы все напоминания этого времени)
+RETRY_OFFLINE_SECONDS = 300
+
+
+def _is_offline(exc: Exception) -> bool:
+    """Сбой связи, ошибка сервера Telegram или «подожди» — пройдёт само. Слишком большой файл — не пройдёт."""
+    if isinstance(exc, TelegramEntityTooLarge):
+        return False
+    return isinstance(exc, (TelegramNetworkError, TelegramServerError, TelegramRetryAfter))
 
 
 def _sales_allowed(user: dict) -> bool:
@@ -110,6 +125,10 @@ async def process_due_jobs(bot: Bot) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — сбой связи и т.п.: попробуем позже
+            if _is_offline(exc):
+                await db.reschedule_job(job["id"], db.now() + RETRY_OFFLINE_SECONDS, job["attempts"])
+                logger.warning("Нет связи с Telegram (%s) — напоминание %s повторим через 5 минут", exc, job["id"])
+                break  # остальные напоминания попробуем на следующей проверке
             logger.warning("Напоминание %s не отправилось (%s) — повторим позже", job["id"], exc)
 
 
@@ -135,14 +154,17 @@ async def process_inactivity(bot: Bot) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — попробуем на следующей проверке, но не бесконечно
+            if _is_offline(exc):
+                # нет связи или лимит Telegram — это не попытка; этого и остальных попробуем на следующей проверке
+                await db.update_user(user_id, inactive_sent=0)
+                logger.warning("«Давно не виделись» для %s не отправилось (%s) — повторим позже", user_id, exc)
+                break
             failures = _inactive_failures[user_id] = _inactive_failures.get(user_id, 0) + 1
             if failures < MAX_ATTEMPTS:
                 await db.update_user(user_id, inactive_sent=0)
             else:
                 _inactive_failures.pop(user_id, None)
             logger.warning("«Давно не виделись» для %s не отправилось (%s) — попытка %s", user_id, exc, failures)
-            if isinstance(exc, (TelegramNetworkError, TelegramRetryAfter)):
-                break  # нет связи или лимит Telegram — остальных попробуем на следующей проверке
             continue
         _inactive_failures.pop(user_id, None)
         if sent is not None:

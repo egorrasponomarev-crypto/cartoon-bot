@@ -440,7 +440,7 @@ NO = "нет"
 CURRENCY_STARS = "⭐"
 CURRENCY_RUB = "₽"
 
-ADMIN_TEXTS_PROBLEMS = """⚠️ В texts.py есть ошибки — эти сообщения Telegram не примет:
+ADMIN_TEXTS_PROBLEMS = """⚠️ В texts.py есть ошибки или незаполненные места:
 {problems}
 
 Исправь и перезапусти бота."""
@@ -500,6 +500,7 @@ ADMIN_LINK_REQUEST = """🧾 <b>Ученик нажал «Я оплатил»</b
 Проверь поступление денег и нажми кнопку:"""
 ADMIN_PRICE_KIND_DISCOUNT = "цена со скидкой"
 ADMIN_PRICE_KIND_FULL = "полная цена"
+ADMIN_PRICE_KIND_DISCOUNT_LATE = "цена со скидкой, но скидка закончилась {hours} ч назад ⚠️ проверь дату платежа"
 BTN_ADMIN_CONFIRM = "✅ Подтвердить"
 BTN_ADMIN_REJECT = "❌ Отклонить"
 ADMIN_PAYMENT_CONFIRMED = "✅ Оплата подтверждена, доступ выдан."
@@ -567,10 +568,20 @@ BTN_SEGMENT_UNPAID = "🕐 Не купившим"
 ADMIN_BROADCAST_SEND_CONTENT = "Пришли сообщение для рассылки: текст или фото с подписью (можно видео). Его получат ровно в таком виде."
 ADMIN_BROADCAST_PREVIEW = "☝️ Так будет выглядеть рассылка. Отправить её {count} пользователям?"
 BTN_BROADCAST_SEND = "✅ Отправить"
+BTN_BROADCAST_STOP = "⏹ Остановить рассылку"
 ADMIN_BROADCAST_EMPTY = "В этом сегменте нет пользователей."
 ADMIN_BROADCAST_STARTED = "🚀 Рассылка началась. Сообщу, когда закончится."
 ADMIN_BROADCAST_DONE = "✅ Рассылка завершена.\nДоставлено: {ok}\nНе доставлено: {failed} (из них заблокировали бота: {blocked})"
 ADMIN_BROADCAST_CANCELLED = "Рассылка отменена."
+ADMIN_BROADCAST_RUNNING = "Рассылка уже идёт. Остановить её можно кнопкой «⏹ Остановить рассылку» под сообщением «Рассылка началась»."
+ADMIN_BROADCAST_NOT_RUNNING = "Рассылка уже закончилась."
+ADMIN_BROADCAST_STOPPED = "⏹ Рассылка остановлена.\nДоставлено: {ok}\nНе доставлено: {failed} (из них заблокировали бота: {blocked})\nНе отправлено: {left}"
+ADMIN_BROADCAST_INTERRUPTED = """⚠️ Рассылка прервалась (бота перезапустили или случилась ошибка).
+Доставлено: {ok}
+Не доставлено: {failed} (из них заблокировали бота: {blocked})
+Не успели отправить: {left}
+
+Если запустить рассылку заново, её получат все — и те, кому она уже пришла."""
 ADMIN_BROADCAST_BUSY = "Сейчас уже идёт рассылка. Дождись её окончания."
 ADMIN_BROADCAST_USE_BUTTONS = "Выбери вариант кнопкой выше или нажми «Отмена»."
 
