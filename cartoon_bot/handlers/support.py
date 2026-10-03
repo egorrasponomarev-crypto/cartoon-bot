@@ -41,7 +41,7 @@ async def got_question(message: Message, state: FSMContext, bot: Bot) -> None:
         return
     await state.clear()
     delivered = await funnel.forward_to_admin(bot, message, texts.ADMIN_HEADER_QUESTION)
-    await history.track(message.from_user.id, "question")
+    await history.track(message.from_user.id, "question" if delivered else "question_failed")
     # заодно убираем старое нижнее меню, если оно осталось
     await message.answer(
         texts.QUESTION_RECEIVED if delivered else texts.SEND_TO_AUTHOR_FAILED, reply_markup=kb.remove_menu()
@@ -58,7 +58,7 @@ async def any_other_message(message: Message, bot: Bot) -> None:
         await funnel.forward_to_admin(bot, message, None)
         return
     delivered = await funnel.forward_to_admin(bot, message, texts.ADMIN_HEADER_MESSAGE)
-    await history.track(message.from_user.id, "question")
+    await history.track(message.from_user.id, "question" if delivered else "question_failed")
     await message.answer(
         texts.QUESTION_RECEIVED if delivered else texts.SEND_TO_AUTHOR_FAILED, reply_markup=kb.remove_menu()
     )

@@ -53,9 +53,10 @@ async def cb_pay(callback: CallbackQuery, callback_data: kb.NavCb, state: FSMCon
         and settings.payment_mode == "preorder"
         and not funnel.discount_active(user)
     ):
-        # «Вступить за 2 490 ₽» из старого сообщения, а скидка уже закончилась — показываем актуальную цену
+        # «Вступить» с ценой со скидкой из старого сообщения, а скидка уже закончилась — показываем актуальную цену
         await funnel.answer_callback(callback, fmt(texts.DISCOUNT_ENDED_ALERT, full_price=full_price_text()), show_alert=True)
         await state.clear()
+        await history.track(user_id, "preorder", detail=history.PREORDER_EXPIRED)
         await funnel.show_offer(bot, user_id, pressed_message_id=funnel.pressed_id(callback))
         return
     await funnel.answer_callback(callback)
@@ -217,6 +218,7 @@ async def cb_i_paid(callback: CallbackQuery, callback_data: kb.NavCb, state: FSM
     user = await db.get_user(user_id)
     if user is None:
         return
+    await history.track(user_id, "paid_claim")
     if user["paid_at"]:
         await funnel.send_to_screen(bot, user_id, texts.ALREADY_BOUGHT)
         return

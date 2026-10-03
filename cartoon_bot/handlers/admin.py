@@ -89,7 +89,7 @@ async def cmd_admin(message: Message) -> None:
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message) -> None:
-    s = await db.stats()
+    s = await db.stats(exclude_user=settings.admin_id or None)  # без тебя и твоих проверок
     total = s["total"]
 
     source_rows = s["sources"]
@@ -275,6 +275,7 @@ async def reply_to_student(message: Message, bot: Bot, student_id: int) -> None:
         try:
             await bot.copy_message(chat_id=student_id, from_chat_id=message.chat.id, message_id=message.message_id)
             result = texts.ADMIN_REPLY_SENT
+            await history.track(student_id, "reply")
             break
         except TelegramRetryAfter as exc:
             await asyncio.sleep(exc.retry_after + 1)
@@ -451,6 +452,7 @@ async def run_broadcast(bot: Bot, user_ids: list[int], from_chat_id: int, messag
                 try:
                     await bot.copy_message(chat_id=user_id, from_chat_id=from_chat_id, message_id=message_id)
                     ok += 1
+                    await history.track(user_id, "broadcast")
                     break
                 except TelegramRetryAfter as exc:
                     await asyncio.sleep(exc.retry_after + 1)

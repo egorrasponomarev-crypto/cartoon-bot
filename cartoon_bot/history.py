@@ -26,6 +26,8 @@ REPORT_LIMIT = 4000
 EXPORT_EVENTS_LIMIT = 100_000
 # Отметка у записи «Вступить»: уведомление админу дошло (о следующих нажатиях этого ученика не пишем)
 PREORDER_NOTIFIED = "admin"
+# Отметка у записи «Вступить»: на кнопке была цена со скидкой, а скидка уже закончилась (показан экран цены)
+PREORDER_EXPIRED = "expired"
 
 
 async def track(user_id: int, kind: str, step: int | None = None, detail: str | None = None) -> None:
@@ -53,6 +55,10 @@ def event_label(event: dict) -> str:
         return fmt(texts.HISTORY_OFFER_FROM_STEP, step=step)
     if kind == "ask" and step != 1:
         return texts.HISTORY_ASK_AUTHOR  # «Написать автору» / «Нужна помощь», а не «Есть вопрос» на экране цены
+    if kind == "preorder" and detail == PREORDER_EXPIRED:
+        return texts.HISTORY_PREORDER_EXPIRED
+    if kind == "access" and detail == "reissued":
+        return texts.HISTORY_ACCESS_REISSUED
     return fmt(texts.HISTORY_EVENTS.get(kind, kind), step=step if step is not None else "", detail=detail)
 
 
@@ -82,6 +88,9 @@ def _offer(user: dict, summary: dict) -> tuple[int | None, int]:
     """(когда ученик впервые сам открыл оффер, сколько раз). Оффер, присланный ботом, сюда не входит."""
     ts, count = _first(summary, "offer")
     old = user.get("first_offer_view_at") if _legacy(summary) else None
+    started = min((row["first_ts"] for row in summary.values()), default=None)
+    if old and started is not None and old >= started:
+        old = None  # отметку поставил уже сам бот (оффер после «давно не виделись»), история знает точнее
     if old and (not ts or old < ts):
         ts, count = old, max(count, 1)
     return ts, count
@@ -111,6 +120,8 @@ async def user_report(user: dict) -> str:
             step_lines.append(fmt(texts.HISTORY_STEP_NOT_OPENED, step=step))
 
     facts = []
+    if _legacy(summary) and (user.get("max_step_opened") or user.get("first_offer_view_at")):
+        facts.append(texts.HISTORY_LEGACY_NOTE)
     for step, download in sorted((getattr(texts, "STEP_DOWNLOADS", None) or {}).items()):
         row = summary.get(("file", step))
         name = esc(download.get("filename") or download.get("file") or "") if isinstance(download, dict) else ""

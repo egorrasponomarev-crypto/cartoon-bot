@@ -484,9 +484,12 @@ async def all_users() -> list[dict]:
 # ---------------------------------------------------------------- статистика
 
 
-async def stats() -> dict:
+async def stats(exclude_user: int | None = None) -> dict:
+    """Счётчики для /stats. exclude_user — не считать этого пользователя (админа с его проверками воронки)."""
+    skip = exclude_user if exclude_user is not None else -1
+
     async def count(where: str = "1") -> int:
-        row = await _fetchone(f"SELECT COUNT(*) AS c FROM users WHERE {where}")
+        row = await _fetchone(f"SELECT COUNT(*) AS c FROM users WHERE ({where}) AND user_id != ?", (skip,))
         return row["c"] if row else 0
 
     return {
@@ -500,9 +503,11 @@ async def stats() -> dict:
             """SELECT COALESCE(NULLIF(source, ''), '') AS source,
                       COUNT(*) AS count,
                       SUM(CASE WHEN paid_at IS NOT NULL THEN 1 ELSE 0 END) AS paid
-               FROM users GROUP BY 1 ORDER BY count DESC"""
+               FROM users WHERE user_id != ? GROUP BY 1 ORDER BY count DESC""",
+            (skip,),
         ),
         "revenue": await _fetchall(
-            "SELECT currency, SUM(amount) AS total FROM payments WHERE status = 'paid' GROUP BY currency"
+            "SELECT currency, SUM(amount) AS total FROM payments WHERE status = 'paid' AND user_id != ? GROUP BY currency",
+            (skip,),
         ),
     }

@@ -841,7 +841,7 @@ async def finish_course(bot: Bot, user_id: int, pressed_message_id: int | None =
 
 
 async def send_step_download(bot: Bot, user_id: int, step: int) -> bool:
-    """Кнопка «📥 Скачать…» под шагом: присылает файл (например, мастер-промпт). False — не получилось.
+    """Кнопка «📄 Забрать…» под шагом: присылает файл (например, банк промптов). False — не получилось.
 
     Файл становится частью экрана: при переходе на другой шаг он уберётся, а скачать его снова — в один тап.
     """
@@ -863,7 +863,8 @@ async def show_steps_menu(bot: Bot, user_id: int, pressed_message_id: int | None
     if user is None:
         return
     text = texts.ALL_STEPS_DONE if user["finished_at"] else texts.STEPS_MENU
-    await show_screen(bot, user_id, [ScreenPart(text=text, reply_markup=kb.steps_menu_kb())], pressed_message_id)
+    if await show_screen(bot, user_id, [ScreenPart(text=text, reply_markup=kb.steps_menu_kb())], pressed_message_id):
+        await history.track(user_id, "steps_menu")
 
 
 # ================================================================ оффер
@@ -1068,6 +1069,8 @@ async def grant_access(
     delivered = False
     if text:
         delivered = await _send_with_retry(bot, user_id, text)
+        if already_paid and link and delivered:
+            await history.track(user_id, "access", detail="reissued")
         if link and not delivered and report_undelivered:
             await notify_admin(
                 bot, fmt(texts.ADMIN_LINK_NOT_DELIVERED, user=card, user_id=user_id), about_user=user_id

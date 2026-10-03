@@ -57,6 +57,7 @@ async def cb_step_file(callback: CallbackQuery, callback_data: kb.StepCb, bot: B
 async def cb_stuck(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     """Старая кнопка «Застрял» — теперь просто предлагаем написать (кнопка «Нужна помощь»)."""
     await funnel.answer_callback(callback)
+    await history.track(callback.from_user.id, "ask")
     await state.clear()
     await bot.send_message(callback.from_user.id, texts.HELP_PROMPT, reply_markup=kb.help_kb())
 
@@ -77,7 +78,7 @@ async def got_result(message: Message, state: FSMContext, bot: Bot) -> None:
     data = await state.get_data()
     await state.clear()
     delivered = await funnel.forward_to_admin(bot, message, texts.ADMIN_HEADER_RESULT, step=data.get("step"))
-    await history.track(message.from_user.id, "question")
+    await history.track(message.from_user.id, "question" if delivered else "question_failed")
     # заодно убираем старое нижнее меню, если оно осталось
     await message.answer(
         texts.RESULT_RECEIVED if delivered else texts.SEND_TO_AUTHOR_FAILED, reply_markup=kb.remove_menu()
