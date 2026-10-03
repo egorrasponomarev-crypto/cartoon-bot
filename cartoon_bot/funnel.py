@@ -48,6 +48,7 @@ from utils import (
     full_price_text,
     shift_quiet,
     shift_quiet_back,
+    video_meta,
     visible_length,
 )
 
@@ -331,6 +332,7 @@ async def send_media(
         return None
     source: Any = item.get("file_id")
     cache_key = None
+    meta: dict[str, int] = {}
     if not source:
         path = media_path(item)
         if path is None:
@@ -347,10 +349,14 @@ async def send_media(
             # так загрузка не зависит от кириллицы и пробелов в названии файла
             upload_name = item.get("filename") or (path.name if kind == "document" else f"{kind}{path.suffix.lower()}")
             source = FSInputFile(path, filename=upload_name)
+            if kind in ("video", "animation"):
+                # ширина, высота и длительность: без них Telegram может растянуть видео в квадрат
+                meta = video_meta(path)
     sender = getattr(bot, f"send_{kind}")
-    extra = {"caption": caption} if caption else {}
+    extra: dict[str, Any] = {"caption": caption} if caption else {}
     if kind == "video":
         extra["supports_streaming"] = True  # видео начинает играть сразу, не дожидаясь загрузки целиком
+    extra.update(meta)
     if reply_markup is not None:
         extra["reply_markup"] = reply_markup
     media_name = str(item.get("file") or item.get("file_id") or kind)
@@ -392,6 +398,7 @@ async def send_album(bot: Bot, user_id: int, items: list[dict]) -> list[Message]
         kind = item.get("type")
         source: Any = item.get("file_id")
         cache_key = None
+        meta: dict[str, int] = {}
         if not source:
             path = media_path(item)
             if path is None:
@@ -403,8 +410,10 @@ async def send_album(bot: Bot, user_id: int, items: list[dict]) -> list[Message]
                     logger.warning("Медиа: файл %s не найден в папке бота", path.name)
                     return None
                 source = FSInputFile(path, filename=f"{kind}{number}{path.suffix.lower()}")
+                if kind == "video":
+                    meta = video_meta(path)  # без размеров Telegram может растянуть видео в квадрат
         if kind == "video":
-            group.append(InputMediaVideo(media=source, supports_streaming=True))
+            group.append(InputMediaVideo(media=source, supports_streaming=True, **meta))
         else:
             group.append(InputMediaPhoto(media=source))
         cache_keys.append(cache_key)

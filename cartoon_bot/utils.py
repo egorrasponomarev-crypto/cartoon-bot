@@ -3,6 +3,7 @@ import html
 import logging
 import os
 import re
+import struct
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -304,6 +305,99 @@ MEDIA_KINDS = ("photo", "video", "animation", "document")
 # Сколько Telegram разрешает загрузить боту: фото — до 10 МБ, остальные файлы — до 50 МБ
 _PHOTO_LIMIT_MB = 10
 _FILE_LIMIT_MB = 50
+# Описание дорожек (блок moov) в MP4 весит килобайты; больше — файл испорчен или это не видео
+_MOOV_LIMIT_MB = 16
+
+
+def _mp4_box(data: bytes, pos: int, end: int) -> tuple[bytes, int, int] | None:
+    """Блок (box) MP4, который начинается в data[pos]: тип, длина заголовка и длина всего блока.
+
+    end — где кончаются данные. None — блоков дальше нет (или файл испорчен).
+    """
+    if pos + 8 > end:
+        return None
+    size, kind = struct.unpack_from(">I4s", data, pos)
+    header = 8
+    if size == 1 and pos + 16 <= end:  # длина не влезла в 4 байта — она в следующих 8
+        size, header = struct.unpack_from(">Q", data, pos + 8)[0], 16
+    elif size == 0:  # блок до самого конца
+        size = end - pos
+    if size < header or pos + size > end:
+        return None
+    return kind, header, size
+
+
+def _mp4_boxes(data: bytes, start: int, end: int):
+    """Блоки внутри data[start:end]: тип, начало и конец содержимого."""
+    pos = start
+    while box := _mp4_box(data, pos, end):
+        kind, header, size = box
+        yield kind, pos + header, pos + size
+        pos += size
+
+
+def _read_moov(path: Path) -> bytes | None:
+    """Блок moov — описание дорожек видео. Бывает и в начале файла, и в конце. None — его нет."""
+    with path.open("rb") as file:
+        file_size = os.fstat(file.fileno()).st_size
+        pos = 0
+        while True:
+            file.seek(pos)
+            box = _mp4_box(file.read(16), 0, file_size - pos)
+            if box is None:
+                return None
+            kind, header, size = box
+            if kind == b"moov":
+                if size > _MOOV_LIMIT_MB * 1024 * 1024:
+                    return None
+                file.seek(pos + header)
+                return file.read(size - header)
+            pos += size
+
+
+def _video_track_size(moov: bytes, start: int, end: int) -> dict[str, int]:
+    """Ширина и высота из дорожки (trak), если это видео, а не звук."""
+    tkhd = handler = None
+    for kind, box_start, box_end in _mp4_boxes(moov, start, end):
+        if kind == b"tkhd":
+            tkhd = box_start
+        elif kind == b"mdia":
+            for sub, sub_start, _ in _mp4_boxes(moov, box_start, box_end):
+                if sub == b"hdlr":
+                    handler = moov[sub_start + 8 : sub_start + 12]
+    if handler != b"vide" or tkhd is None:
+        return {}
+    matrix = tkhd + (52 if moov[tkhd] == 1 else 40)  # в версии 1 поля времени длиннее
+    a, _, _, _, d = struct.unpack_from(">5i", moov, matrix)
+    width, height = (round(value / 65536) for value in struct.unpack_from(">II", moov, matrix + 36))
+    if a == 0 and d == 0:  # видео повёрнуто на 90° (снято телефоном): на экране стороны меняются местами
+        width, height = height, width
+    return {"width": width, "height": height} if width > 0 and height > 0 else {}
+
+
+def video_meta(path: Path) -> dict[str, int]:
+    """Ширина, высота и длительность видео MP4 — бот передаёт их Telegram вместе с видео.
+
+    Без них Telegram может показать видео квадратом (картинка растянута) и с длительностью 0:00 —
+    так было с видео шага 3. {} — файл не MP4 или не читается: видео уйдёт без них.
+    """
+    try:
+        moov = _read_moov(path) or b""
+        meta: dict[str, int] = {}
+        for kind, start, end in _mp4_boxes(moov, 0, len(moov)):
+            if kind == b"mvhd":
+                if moov[start] == 1:
+                    timescale, duration = struct.unpack_from(">IQ", moov, start + 20)
+                else:
+                    timescale, duration = struct.unpack_from(">II", moov, start + 12)
+                if timescale and duration:
+                    meta["duration"] = max(1, round(duration / timescale))
+            elif kind == b"trak" and "width" not in meta:
+                meta.update(_video_track_size(moov, start, end))
+        return meta
+    except (OSError, struct.error, IndexError) as exc:
+        logger.warning("Не удалось узнать размеры видео %s: %s", path.name, exc)
+        return {}
 
 
 def _check_media_files() -> list[str]:
@@ -363,5 +457,10 @@ def _check_media_files() -> list[str]:
             if size_mb > limit_mb:
                 problems.append(
                     f"{label}: файл «{item['file']}» весит {size_mb:.1f} МБ — Telegram принимает до {limit_mb} МБ"
+                )
+            if item["type"] == "video" and not {"width", "height"} <= video_meta(path).keys():
+                problems.append(
+                    f"{label}: не получилось узнать размеры видео «{item['file']}» — Telegram может показать его "
+                    "квадратом (картинка растянется). Сохрани видео в формате MP4 (H.264)"
                 )
     return problems
