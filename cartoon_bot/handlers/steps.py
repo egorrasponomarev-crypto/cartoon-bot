@@ -46,9 +46,17 @@ async def cb_finish(callback: CallbackQuery, state: FSMContext, bot: Bot) -> Non
 
 @router.callback_query(kb.StepCb.filter((F.action == "file") & VALID_STEP))
 async def cb_step_file(callback: CallbackQuery, callback_data: kb.StepCb, bot: Bot) -> None:
-    """Кнопка «📥 Скачать…» под шагом (например, мастер-промпт на шаге 1)."""
+    """Кнопка «📄 Забрать…» под шагом (например, банк промптов на шаге 2)."""
+    downloads = getattr(texts, "STEP_DOWNLOADS", None) or {}
+    step = callback_data.step
+    if step not in downloads and len(downloads) == 1:
+        # старая кнопка файла, которого у шага больше нет (мастер-промпт с шага 1) — присылаем тот, что есть сейчас
+        step = next(iter(downloads))
+    if step not in downloads:
+        await funnel.answer_callback(callback, texts.BUTTON_EXPIRED, show_alert=True)
+        return
     # пока файл отправляется, на кнопке «часики»; не получилось — короткое окошко вместо тишины
-    sent = await funnel.send_step_download(bot, callback.from_user.id, callback_data.step)
+    sent = await funnel.send_step_download(bot, callback.from_user.id, step)
     # если отправка затянулась (Telegram просил подождать), ответ на нажатие уже может не приниматься
     await funnel.answer_callback(callback, None if sent else texts.DOWNLOAD_FAILED, show_alert=not sent)
 

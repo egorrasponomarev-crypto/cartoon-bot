@@ -99,13 +99,12 @@ async def cb_cancel(callback: CallbackQuery, state: FSMContext, bot: Bot) -> Non
 
 @router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=KICKED))
 async def on_bot_blocked(event: ChatMemberUpdated) -> None:
-    if event.chat.type == ChatType.PRIVATE:
-        await db.set_blocked(event.from_user.id, True)
+    # в историю — только для тех, кто есть в базе (не для стёртых при очистке базы)
+    if event.chat.type == ChatType.PRIVATE and await db.set_blocked(event.from_user.id, True):
         await history.track(event.from_user.id, "blocked")
 
 
 @router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
 async def on_bot_unblocked(event: ChatMemberUpdated) -> None:
-    if event.chat.type == ChatType.PRIVATE:
-        await db.set_blocked(event.from_user.id, False)
+    if event.chat.type == ChatType.PRIVATE and await db.set_blocked(event.from_user.id, False):
         await history.track(event.from_user.id, "unblocked")

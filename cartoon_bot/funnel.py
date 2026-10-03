@@ -1116,6 +1116,7 @@ async def revoke_access(bot: Bot, user_id: int) -> str | None:
 # media_group_id → (ID ученика, когда пришло). Нужно, чтобы альбом из нескольких фото
 # целиком ушёл админу, а ученик получил один ответ, а не пять.
 _albums: dict[str, tuple[int, float]] = {}
+_admin_forward_lock = asyncio.Lock()
 
 
 def claim_album(message: Message) -> bool:
@@ -1146,12 +1147,14 @@ async def forward_to_admin(bot: Bot, message: Message, header_template: str | No
         logger.warning("ADMIN_ID не указан в .env — сообщение ученика не переслано")
         return False
     user_id = message.from_user.id
-    if header_template:
-        user = await db.get_user(user_id)
-        await notify_admin(
-            bot, fmt(header_template, user=user_card(user, message.from_user), step=step), about_user=user_id
-        )
-    forwarded = await admin_call(lambda: message.forward(settings.admin_id))
+    # карточка ученика и его сообщение — подряд, даже если двое написали одновременно
+    async with _admin_forward_lock:
+        if header_template:
+            user = await db.get_user(user_id)
+            await notify_admin(
+                bot, fmt(header_template, user=user_card(user, message.from_user), step=step), about_user=user_id
+            )
+        forwarded = await admin_call(lambda: message.forward(settings.admin_id))
     if forwarded is None:
         return False
     await db.link_admin_message(forwarded.message_id, user_id)

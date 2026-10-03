@@ -23,7 +23,7 @@ import history
 import keyboards as kb
 import texts
 from config import settings
-from filters import FORWARDABLE, IsAdmin, ReplyToStudent
+from filters import FORWARDABLE, IsAdmin, ReplyToStudent, is_bot_forward, student_in_card
 from states import AdminStates
 from utils import esc, fmt, format_number
 
@@ -144,13 +144,21 @@ async def cmd_stats(message: Message) -> None:
 
 
 @router.message(Command("user"))
-async def cmd_user(message: Message, command: CommandObject) -> None:
+async def cmd_user(message: Message, command: CommandObject, bot: Bot) -> None:
     """История ученика: /user 123456789, /user @username или ответом /user на его пересланное сообщение."""
     user = None
-    if not (command.args or "").strip() and message.reply_to_message is not None:
-        student_id = await db.user_by_admin_message(message.reply_to_message.message_id)
+    replied = message.reply_to_message
+    if not (command.args or "").strip() and replied is not None:
+        # связи в базе может не быть (например, сообщение пришло до очистки базы) — тогда по карточке ученика
+        student_id = await db.user_by_admin_message(replied.message_id) or student_in_card(replied, bot.id)
         if student_id is not None:
             user = await db.get_user(student_id)
+            if user is None:
+                await message.answer(fmt(texts.ADMIN_USER_NOT_FOUND, user_id=student_id))
+                return
+        elif is_bot_forward(replied, bot.id):
+            await message.answer(texts.ADMIN_USER_UNKNOWN)
+            return
     if user is None:
         user = await _find_student(message, command, "/user 123456789 или /user @username")
         if user is None:
@@ -275,12 +283,16 @@ async def reply_to_student(message: Message, bot: Bot, student_id: int) -> None:
         try:
             await bot.copy_message(chat_id=student_id, from_chat_id=message.chat.id, message_id=message.message_id)
             result = texts.ADMIN_REPLY_SENT
-            await history.track(student_id, "reply")
+            if await db.get_user(student_id) is not None:  # ученика, стёртого при очистке базы, в истории нет
+                await history.track(student_id, "reply")
             break
         except TelegramRetryAfter as exc:
             await asyncio.sleep(exc.retry_after + 1)
-        except TelegramForbiddenError:
-            await db.set_blocked(student_id, True)
+        except TelegramForbiddenError as exc:
+            if "initiate" in str(exc).lower():  # «bot can't initiate conversation»: человек ни разу не запускал бота
+                result = texts.ADMIN_REPLY_NOT_STARTED
+            else:
+                await db.set_blocked(student_id, True)
             break
         except Exception as exc:  # noqa: BLE001 — покажем админу настоящую причину
             result = fmt(texts.ADMIN_REPLY_ERROR, error=esc(str(exc) or exc.__class__.__name__))
@@ -356,7 +368,11 @@ async def forwarded_from_channel(message: Message) -> None:
 
 
 @router.message(StateFilter(None), F.content_type.in_(MEDIA_TYPES))
-async def admin_media(message: Message) -> None:
+async def admin_media(message: Message, bot: Bot) -> None:
+    if is_bot_forward(message.reply_to_message, bot.id):
+        # ответ на пересланное сообщение ученика, а чьё оно — бот уже не знает (пришло до очистки базы)
+        await message.answer(texts.ADMIN_REPLY_UNKNOWN)
+        return
     await _answer_file_id(message)
 
 
@@ -435,6 +451,13 @@ async def broadcast_stop(callback: CallbackQuery, bot: Bot) -> None:
     await funnel.answer_callback(callback)
     _broadcast_stop_requested = True
     _broadcast_task.cancel()
+
+
+@router.callback_query(kb.BroadcastCb.filter())
+async def broadcast_stale(callback: CallbackQuery, bot: Bot) -> None:
+    """«Всем…» или «✅ Отправить» под старым сообщением: рассылку уже отменили или отправили, или бот перезапускался."""
+    await _remove_pressed_buttons(callback, bot)
+    await funnel.answer_callback(callback, texts.ADMIN_BROADCAST_STALE, show_alert=True)
 
 
 async def _remove_pressed_buttons(callback: CallbackQuery, bot: Bot) -> None:

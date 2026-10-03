@@ -261,8 +261,9 @@ async def claim_offer_shown(user_id: int, ts: int) -> bool:
     return changed == 1
 
 
-async def set_blocked(user_id: int, blocked: bool) -> None:
-    await _execute("UPDATE users SET blocked = ? WHERE user_id = ?", (1 if blocked else 0, user_id))
+async def set_blocked(user_id: int, blocked: bool) -> bool:
+    """Отмечает, что ученик заблокировал (или снова открыл) бота. False — такого ученика нет в базе."""
+    return await _execute("UPDATE users SET blocked = ? WHERE user_id = ?", (1 if blocked else 0, user_id)) > 0
 
 
 async def delete_user(user_id: int) -> None:

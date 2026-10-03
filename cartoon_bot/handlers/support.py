@@ -10,7 +10,7 @@ import history
 import keyboards as kb
 import texts
 from config import settings
-from filters import FORWARDABLE
+from filters import FORWARDABLE, is_bot_forward
 from states import UserStates
 
 router = Router(name="support")
@@ -52,7 +52,9 @@ async def got_question(message: Message, state: FSMContext, bot: Bot) -> None:
 async def any_other_message(message: Message, bot: Bot) -> None:
     """Ученик написал что-то, не нажимая кнопок, — тоже передаём автору."""
     if message.from_user.id == settings.admin_id:
-        await message.answer(texts.ADMIN_HINT)
+        # ответ на пересланное сообщение ученика, а чьё оно — бот уже не знает (пришло до очистки базы)
+        unknown = is_bot_forward(message.reply_to_message, bot.id)
+        await message.answer(texts.ADMIN_REPLY_UNKNOWN if unknown else texts.ADMIN_HINT)
         return
     if funnel.claim_album(message):
         await funnel.forward_to_admin(bot, message, None)

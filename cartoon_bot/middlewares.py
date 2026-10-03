@@ -29,6 +29,7 @@ class ActivityMiddleware(BaseMiddleware):
         tg_user = data.get("event_from_user")
         chat = data.get("event_chat")
 
+        key = None
         if isinstance(event, CallbackQuery) and tg_user is not None:
             key = (event.message.message_id if event.message else None, event.data)
             now = time.monotonic()
@@ -48,4 +49,10 @@ class ActivityMiddleware(BaseMiddleware):
                     await funnel.remove_old_menu(bot, tg_user.id, force=old_button)
             except Exception:
                 logger.exception("Не удалось обновить активность пользователя %s", tg_user.id)
-        return await handler(event, data)
+        try:
+            return await handler(event, data)
+        finally:
+            # 3 секунды считаем от конца обработки: второе нажатие, которое ждало, пока грузилось
+            # видео (например, первый раз после перезапуска), — тоже двойное, второй раз не отправляем
+            if key is not None and _last_callback.get(tg_user.id, (None, None))[:2] == key:
+                _last_callback[tg_user.id] = (*key, time.monotonic())
