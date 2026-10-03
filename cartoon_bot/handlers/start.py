@@ -63,6 +63,11 @@ async def menu_course(message: Message, state: FSMContext, bot: Bot) -> None:
 
 @router.message(F.text == texts.BTN_MENU_AUTHOR)
 async def menu_author(message: Message, state: FSMContext) -> None:
+    chat = kb.contact_kb()
+    if chat is not None:  # вопросы пишут в личку (HELP_URL)
+        await state.clear()
+        await message.answer(texts.ASK_AUTHOR_CHAT, reply_markup=chat)
+        return
     await state.set_state(UserStates.waiting_question)
     await message.answer(texts.ASK_AUTHOR, reply_markup=kb.cancel_kb())
 

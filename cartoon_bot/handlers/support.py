@@ -20,10 +20,18 @@ router.message.filter(F.chat.type == ChatType.PRIVATE)
 @router.callback_query(kb.NavCb.filter(F.action == "ask"))
 async def cb_ask_author(callback: CallbackQuery, callback_data: kb.NavCb, state: FSMContext, bot: Bot) -> None:
     await funnel.answer_callback(callback)
+    user_id = callback.from_user.id
     # step=1 — «❓ Есть вопрос» на экране цены; остальные — «Написать автору» / «Нужна помощь»
-    await history.track(callback.from_user.id, "ask", step=1 if callback_data.step == 1 else None)
+    await history.track(user_id, "ask", step=1 if callback_data.step == 1 else None)
+    chat = kb.contact_kb()
+    if chat is not None:
+        # вопросы пишут в личку (HELP_URL); сообщение уберётся вместе с экраном при следующем переходе
+        await state.clear()
+        await funnel.send_to_screen(bot, user_id, texts.ASK_AUTHOR_CHAT, reply_markup=chat)
+        return
+    # ссылки на личку нет — вопрос пишут прямо боту, он придёт админу
     await state.set_state(UserStates.waiting_question)
-    await bot.send_message(callback.from_user.id, texts.ASK_AUTHOR, reply_markup=kb.cancel_kb())
+    await bot.send_message(user_id, texts.ASK_AUTHOR, reply_markup=kb.cancel_kb())
 
 
 @router.message(UserStates.waiting_question, F.content_type.in_(FORWARDABLE))

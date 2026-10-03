@@ -13,8 +13,9 @@ import texts
 from config import settings
 from utils import discount_price_text, fmt, full_price_text
 
-# Куда ведёт кнопка «Нужна помощь». При запуске бот подставляет сюда ссылку на чат с админом
-# (если HELP_URL в .env не задан). Пусто — кнопка открывает вопрос автору внутри бота.
+# Личка для вопросов (HELP_URL в .env, сейчас @nanopapa): туда ведут «Нужна помощь», «💬 Написать»
+# после «Есть вопрос» и чат с готовой заявкой после «Вступить». Если HELP_URL не задан, при запуске бот
+# подставляет сюда чат с админом. Пусто — вопросы пишут прямо боту (они приходят админу).
 _help_url: str = settings.help_url
 
 
@@ -89,6 +90,13 @@ def help_button() -> InlineKeyboardButton:
 
 def help_kb() -> InlineKeyboardMarkup:
     return _kb([help_button()])
+
+
+def contact_kb() -> InlineKeyboardMarkup | None:
+    """Кнопка «💬 Написать» в личку для вопросов. None — ссылки нет: вопрос пишут прямо боту."""
+    if _help_url:
+        return _kb([InlineKeyboardButton(text=texts.BTN_WRITE_CHAT, url=_help_url)])
+    return None
 
 
 def preorder_url() -> str | None:
